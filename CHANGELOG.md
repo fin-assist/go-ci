@@ -1,0 +1,6 @@
+# Changelog
+
+## [Unreleased]
+
+### Добавлено
+- FIN-372: отдельный источник Go CI и конфигураций линтеров для сервисов и библиотек FinAssist; workflows, bootstrap и общие regression tests перенесены из сервисного шаблона без изменения правил.

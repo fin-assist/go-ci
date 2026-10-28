@@ -32,6 +32,24 @@ def run(script, **environment):
 
 
 class SharedGoWorkflowTests(unittest.TestCase):
+    def test_source_policy_is_gated_by_the_standalone_self_workflow(self):
+        source = document('ci.yml')
+        trigger = source.get('on', source.get(True))
+        self.assertIn('pull_request', trigger)
+        self.assertEqual(trigger['push']['branches'], ['main'])
+        self.assertEqual(source['permissions'], {'contents': 'read'})
+        job = source['jobs']['shared-source']
+        self.assertGreater(job['timeout-minutes'], 0)
+        commands = [step.get('run') for step in job['steps']]
+        for required in ['make test', 'make probe', 'make lint']:
+            self.assertIn(required, commands)
+        setup_go = next(step for step in job['steps']
+                        if step.get('uses', '').startswith('actions/setup-go@'))
+        self.assertIn('go-version', setup_go['with'])
+        self.assertNotIn('go-version-file', setup_go['with'])
+        for step in steps('shared-go.yml'):
+            self.assertNotIn("github.repository == 'fin-assist/go-ci'", step.get('if', ''))
+
     def test_entrypoints_are_read_only_bounded_reusable_jobs(self):
         for name in ['shared-go.yml', 'shared-api.yml', 'shared-lint.yml', 'shared-migrations.yml']:
             with self.subTest(workflow=name):

@@ -41,7 +41,8 @@ linters:
         # The core of «No process-wide state» (AGENTS.md, «Writing code»): the global logger, metrics
         # registry, HTTP client and server, OpenTelemetry providers, the environment and the process.
         # Owner decision (FIN-322): lint checks only this core; the principle as a whole is checked in review.
-        # scripts/test_lint_policy.py runs this linter on a probe of every forbidden and allowed form.
+        # common/probe_lint.py checks representative typed cases; consumer scripts/test_lint_policy.py
+        # retains the exhaustive forbidden and allowed forms.
         # slog.With is slog.Default().With: it also reaches the process logger.
         - pattern: ^slog\.(Default|SetDefault|With|SetLogLoggerLevel|Debug|DebugContext|Info|InfoContext|Warn|WarnContext|Error|ErrorContext|Log|LogAttrs)$
           pkg: ^log/slog$

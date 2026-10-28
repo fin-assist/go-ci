@@ -61,16 +61,23 @@ class MigrationCommands(unittest.TestCase):
 
     def test_changed_deleted_and_renamed_old_migrations_fail(self):
         original = self.root / "migrations/001.up.sql"
-        for change in ("modify", "delete", "rename"):
+        for change in ("modify", "delete", "rename", "type-change"):
             with self.subTest(change=change):
                 self.git("reset", "--hard", self.base)
                 if change == "modify":
                     original.write_text("CREATE TABLE other (id bigint);\n")
                 elif change == "delete":
                     original.unlink()
-                else:
+                elif change == "rename":
                     original.rename(self.root / "migrations/renamed.up.sql")
+                else:
+                    (self.root / "replacement.sql").write_text("DROP TABLE one;\n")
+                    original.unlink()
+                    original.symlink_to("../replacement.sql")
                 self.commit()
+                if change == "type-change":
+                    self.assertEqual(self.git("diff", "--name-status", self.base + "...HEAD",
+                                              "--", "migrations/*.sql"), "T\tmigrations/001.up.sql")
                 with self.assertRaisesRegex(ValueError, "Existing migrations"):
                     LINT.migrations(self.root, self.base, self.root / "config", "2.70.0")
 

@@ -25,7 +25,7 @@ def changed_files(root, base, diff_filter, pattern):
 
 
 def migrations(root, base, config, squawk_version):
-    changed = changed_files(root, base, "MDR", "migrations/*.sql")
+    changed = changed_files(root, base, "MDRT", "migrations/*.sql")
     if changed:
         raise ValueError("Existing migrations were modified, renamed or deleted; add a new migration")
     added = changed_files(root, base, "A", "migrations/*.up.sql")

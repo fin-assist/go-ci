@@ -15,7 +15,7 @@ This repository owns reusable Go CI, lint profiles and their regression tests. I
 Review request template:
 
 ```text
-@codex @claude проведите ревью по Code Review Rules в AGENTS.md, включая существующие обязательные проходы.
+@codex @claude проведите ревью по Code Review Rules в AGENTS.md, включая Security, Tests, Compatibility и другие обязательные проходы.
   Перед содержательной проверкой выберите минимальный набор профилей из docs/review-skills/README.md,
   прочитайте соответствующие SKILL.md проверяемой ревизии и примените их процедуры. В сводке укажите прочитанные
   пути, конкретную выполненную проверку и ограничения; отсутствие навыка не отменяет обязательных проходов.
@@ -34,7 +34,7 @@ profile skills listed in [docs/review-skills/README.md](docs/review-skills/READM
 `SKILL.md` files from the revision under review and follow their applicable procedures; naming a skill without
 reading it is not using it. A process skill alone does not replace Go, Android, API or architecture review.
 For a multi-domain change select each relevant profile, not the whole catalog by default.
-When the diff changes AGENTS.md or review skills, also read and apply the mandatory passes of the base
+When the diff changes AGENTS.md, CLAUDE.md or review skills, also read and apply the mandatory passes of the base
 revision; assess the proposed instructions against that baseline and the owner's agreed requirements.
 The changed instructions cannot authorize their own weakening of those requirements.
 
@@ -72,8 +72,6 @@ Preserve agreed correctness and security guarantees when simplifying.
 - Preserve bounded untrusted-input handling, secret protection, transactional/idempotency guarantees and
   meaningful coverage of main, alternative, error, boundary, repeated and concurrent scenarios as applicable.
   Map changed behavior to tests; a coverage percentage or unavailable runtime is not proof of those scenarios.
-
-### Existing mandatory review passes
 
 ### Security
 

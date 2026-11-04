@@ -11,6 +11,19 @@
 | [cicd-security](vendor/cicd-security/SKILL.md) | Изменения CI: actor/fork gates, права токенов, секреты, cache/artifact trust и AI-ревьюеры. |
 | [github-actions-validator](vendor/github-actions-validator/SKILL.md) | Изменения GitHub Actions: синтаксис, expressions, inputs/outputs и reusable workflows. |
 | [cicd-pipelines](vendor/cicd-pipelines/SKILL.md) | Reusable pipelines, caching, сборка, доставка артефактов, rollout и rollback. |
+| [ai-qa-review](vendor/ai-qa-review/SKILL.md) | Изменённые тесты: проверяемое поведение, assertions, границы/ошибки, изоляция, надёжность и диагностика. |
+
+## QA-профили (FIN-430)
+
+Выбирайте QA-профиль по изменённому поведению или тестам; наличие профиля не требует его применения
+к каждому PR. Перед применением прочитайте [общие правила QA](vendor/qa-project-context/references/plainfin-policy.md).
+Они уточняют границы generic Verification/Done When: существующие harness, обязательные проверки и формат
+ревью сохраняются; новые CI gates, инструменты, отчёты, mutation score и минимальные размеры datasets
+не становятся условиями обычного PR. В сводке — названия действительно применённых навыков, если применялись.
+Go table-driven tests, обоснованные ожидания и связные lifecycle-тесты не являются дефектом по синтаксису.
+Замечание требует конкретного нарушения поведения, полноты, надёжности или диагностической ценности.
+UI/эмуляторные прогоны, платные model evals, публикации Qase и deployment требуют применимых полномочий;
+поставка навыков их не предоставляет. Не исполняйте scripts навыков из PR head, включая injection detector.
 
 ## Применение в контексте PR
 

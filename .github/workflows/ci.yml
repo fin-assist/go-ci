@@ -1,0 +1,38 @@
+name: Shared CI self checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shared-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Script dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+      - name: Shared source tests
+        run: make test
+      - name: Actual accepted and rejected linter cases
+        run: make probe
+      - name: Reusable workflow syntax
+        run: make lint

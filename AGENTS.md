@@ -4,13 +4,18 @@ This repository owns reusable Go CI, lint profiles and their regression tests. I
 
 ## Workflow
 
-- Work on a tooling branch from main; PRs target main and reference FIN-372.
+- Work on a tooling branch from main; PRs target main and reference their FIN issue.
 - Commit messages and code/comments are English; PR title/body and review findings are Russian.
 - Read README and docs/shared-go-ci.md before changing policy.
 - Every test/process must have a real timeout. Never run UI tests or create tags.
 - Preserve full-SHA pinning, grouped Renovate updates, matching bootstrap copies and rollback.
 - Ordinary source PRs require owner authorization to merge. Do not change protections or secrets.
 - Request both reviewers with an intentional comment beginning `@codex @claude`; include Security and Tests. After a pushed fix, reply/resolve findings and request both immediately without waiting for CI.
+- FIN-447 keeps Renovate control local: `scripts/renovate_policy.py`, `.github/renovate-policy.json`,
+  `renovate-base.json` and `docs/renovate-policy.md`. Run `make policy-test` with a process timeout for changes.
+  `shared-source` remains required alongside both policy checks. Go compiler/toolchain updates, including
+  mixed PRs and `uses-with` Go versions, are manual. Bootstrap, protections and activation are separate
+  owner operations; disabled controller code must not read credentials, files or GitHub APIs.
 
 Review request template:
 

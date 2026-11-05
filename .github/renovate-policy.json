@@ -1,0 +1,11 @@
+{
+  "requiredChecks": [
+    "shared-source",
+    "Renovate policy tests",
+    "Renovate runtime contract"
+  ],
+  "controllerLogin": "avtomon",
+  "ciChecks": [
+    "shared-source"
+  ]
+}

@@ -44,7 +44,7 @@ jobs:
           if os.environ['FAKE_LLM'] == 'true' and os.environ['SERVICE'] != 'assistant':
               raise SystemExit('fake-llm is supported only for assistant')
           PY
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Local and CI pins agree
@@ -58,7 +58,7 @@ jobs:
               raise SystemExit('Local and CI pins differ')
           PY
       - name: Checkout the pinned shared implementation
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: fin-assist/go-ci
           ref: ${{ inputs.revision }}

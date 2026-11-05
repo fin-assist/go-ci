@@ -37,7 +37,8 @@ PR body. `updates()` нормализует packageName. Go toolchain guard пр
 Единственная цель — самая новая `release/X.Y.Z`, для которой ещё нет одновременно смёрженного
 PR из того же репозитория в `main` и подтверждённой предковости. При отсутствии активной release —
 `main`. Только что созданная от main ветка остаётся активной до release merge PR.
-Цель и PR head/commit/CI повторно проверяются перед действием. Смена ветки между последним
+Цель и PR head/commit/CI повторно проверяются перед действием. Конфликтующий либо ещё не рассчитанный mergeability PR остаётся владельцу до claim, quarantine и close; свежая mergeability повторно проверяется перед действием. Red CI со state blocked не считается конфликтом.
+Смена ветки между последним
 чтением и merge не атомарна: общей API-транзакции GitHub для этого нет.
 
 `renovate.json` подключает только собственные presets в порядке baseline → generated policy:
@@ -48,9 +49,9 @@ PR из того же репозитория в `main` и подтверждён
 Generated policy принимает только один target и строго ограниченные generated recovery/quarantine
 rule shapes. Произвольные matcher/JSONata, native automerge и посторонние поля отклоняются.
 
-Защиты `main` и `release/*`: strict required checks от GitHub Actions App15368,
+Защиты `main` и `release/*`: strict required checks от GitHub Actions App15368 (runtime проверяет каждую привязку и отсутствие дубликатов),
 `enforce_admins: true`, push только controllerLogin (`avtomon`), teams/apps пусты,
-без force/delete. Matching `release/*` дополнительно запрещает создание ветки другим actor.
+без force/delete (оба флага runtime требует явно false). Matching `release/*` дополнительно запрещает создание ветки другим actor.
 Ветка `renovate-policy` защищается отдельно: owner-only push, enforce_admins, без force/delete,
 без требований PR/CI. Существующие ограничения обычных PR сохраняются. Runtime проверяет защиты,
 identity и inherited rulesets; active или неизвестные rulesets блокируют действия до проверки совместимости.

@@ -1,0 +1,29 @@
+{
+  "extends": [
+    "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Go compiler and toolchain directives remain manual",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang",
+        "toolchain"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Go toolchains in reusable workflows and container images remain manual",
+      "matchPackageNames": [
+        "actions/go-versions",
+        "golang",
+        "library/golang",
+        "docker.io/library/golang",
+        "golang/go"
+      ],
+      "enabled": false
+    }
+  ]
+}

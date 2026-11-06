@@ -73,7 +73,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
         run: python3 scripts/stage_artifact.py "$SERVICE" "$IMAGE_TAG" stage-artifact
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: stage-${{ inputs.service }}-${{ github.sha }}-linux-amd64
           path: stage-artifact/
@@ -82,7 +82,7 @@ jobs:
       - name: Extract stage fake provider from its tested image
         if: inputs.fake_llm
         run: python3 scripts/stage_artifact.py fake-llm fake-llm:ci fake-llm-artifact
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: inputs.fake_llm
         with:
           name: stage-fake-llm-${{ github.sha }}-linux-amd64

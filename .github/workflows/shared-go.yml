@@ -55,7 +55,7 @@ jobs:
       # bank-bff script tests execute its JavaScript helpers as well.
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
       - name: Access to private modules
         env:
           TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}

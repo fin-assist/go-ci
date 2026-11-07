@@ -143,3 +143,18 @@ controller runtime — отдельные доказательства посл�
 [closed PR lifecycle](https://docs.renovatebot.com/key-concepts/pull-requests/),
 [Dashboard](https://docs.renovatebot.com/key-concepts/dashboard/),
 [GitHub merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
+
+
+## Поздние конфликты PR (FIN-451)
+
+После чтения policy контроллер повторно проверяет подписанные commits, head, цель, mergeability
+и снимок run/attempt непосредственно перед записью quarantine/recovery. Прежние проверки после
+записи policy и перед закрытием PR сохраняются. Для потраченного retry claim без нового attempt
+такая же fresh-проверка предшествует UX-комментарию и восстановлению comment_id в receipt.
+Поздний конфликт или неизвестная mergeability останавливают эти записи; сохранённый budget
+не сбрасывается и не разрешает повторный dispatch после redelivery или восстановления clean.
+
+Три дополнительных lifecycle-теста проверяют конфликт после сохранения claim, во время чтения
+policy и current run. Изолированные mutations удаляют только соответствующую проверку свежести.
+Изменение касается автоматизации репозитория; runtime, API, версии, workflow и внешние настройки
+не меняются. Merge и эксплуатационные операции остаются отдельными действиями владельца.

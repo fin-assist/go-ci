@@ -10,7 +10,7 @@ python3 <common>/scripts/stage_artifact.py --root <consumer-root> <service> <ima
 
 `--root` обязателен; относительный output считается от этого каталога. Из его `go.mod`
 берутся версии модулей `fin-assist/*`, а source SHA/repository/event/ref/run/attempt — из
-контекста Actions. API: `package(service, image, output, environ, *, root)`; manifest schema1,
+контекста Actions. API: `package(service, image, output, environ, *, root)`; manifest `schema_version: 1`,
 имя бинарника и `SHA256SUMS` сохраняются. Существующий output не перезаписывается.
 Извлечение допускает только linux/amd64 image с content ID и непустой regular binary;
 symlink, directory, отсутствие или пустой файл отклоняются. Временный контейнер удаляется
@@ -26,7 +26,7 @@ CLI пишет эти IDs и прежний `image_tag` в `GITHUB_OUTPUT`. Уп
 production refusal, разделение public/operational listeners и проверку shutdown; assistant
 по `fake_llm` проверяет и упаковывает отдельный `/fake-llm`. Artifact names остаются
 `stage-<service>-<source SHA>-linux-amd64` и `stage-fake-llm-<source SHA>-linux-amd64`,
-retention30 дней, отсутствие файлов — ошибка.
+retention 30 дней, отсутствие файлов — ошибка.
 
 ## Переход потребителя
 

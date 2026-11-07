@@ -124,6 +124,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("command", nargs="?")
     parser.add_argument("version", nargs="?")
     args = parser.parse_args(argv[1:])
+    if not args.root.is_absolute():
+        parser.error("--root must be an absolute consumer repository path")
     sections = parse((args.root / "CHANGELOG.md").read_text(encoding="utf-8"))
     cmd = args.command
     if cmd == "latest" and args.version is None:

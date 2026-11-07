@@ -1,0 +1,86 @@
+name: Shared service release
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        description: Full commit SHA of the reviewed shared CI source
+        required: true
+        type: string
+      tag:
+        description: Existing owner-created service version tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TAG: ${{ inputs.tag }}
+      CI_REVISION: ${{ inputs.revision }}
+    steps:
+      - name: Validate release invocation and immutable source
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          tag, revision = os.environ['TAG'], os.environ['CI_REVISION']
+          if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+              raise SystemExit('Tag is not vX.Y.Z')
+          if not re.fullmatch(r'[0-9a-f]{40}', revision):
+              raise SystemExit('Shared CI revision must be a full commit SHA')
+          event, ref = os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_REF']
+          if not ((event == 'push' and ref == 'refs/tags/' + tag)
+                  or (event == 'workflow_dispatch' and ref == 'refs/heads/main')):
+              raise SystemExit('Only the matching tag push or manual main invocation may publish')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout the pinned shared release implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/go-ci
+          ref: ${{ inputs.revision }}
+          path: .finassist-ci/source
+          persist-credentials: false
+      - name: The tag is a release of this service
+        run: |
+          # fetch-depth:0 checkout fetched all heads while its read credential was
+          # available. Do not fetch again after persist-credentials:false cleanup.
+          git show-ref --verify --quiet refs/remotes/origin/main
+          # Manual GITHUB_SHA belongs to main; HEAD identifies the requested tag.
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "$TAG does not point to a commit on main"
+            exit 1
+          fi
+          python3 .finassist-ci/source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
+          if [ "$(python3 .finassist-ci/source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" latest)" != "$TAG" ]; then
+            echo "The newest section of CHANGELOG.md is not $TAG: merge the release PR first"
+            exit 1
+          fi
+          python3 .finassist-ci/source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" notes "$TAG" > notes.md
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists; preserving its notes and assets"
+          elif gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md; then
+            echo "GitHub Release $TAG published"
+          elif gh release view "$TAG" > /dev/null 2>&1; then
+            # Another publisher may have created it between the first read and create.
+            echo "GitHub Release $TAG now exists; preserving its notes and assets"
+          else
+            echo "Could not publish or confirm GitHub Release $TAG" >&2
+            exit 1
+          fi

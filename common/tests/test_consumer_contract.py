@@ -63,6 +63,49 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertTrue(result.wasSuccessful())
                 self.assertEqual(result.testsRun, 3)
 
+    def quality_make(self):
+        text = ''
+        for targets, command in [('test-names', 'test-names'),
+                                 ('collect-unit collect-integration collect-api', 'collect "$(@:collect-%=%)"'),
+                                 ('check-unit check-integration check-api', 'check "$(@:check-%=%)"'),
+                                 ('cover-combined', 'combined')]:
+            text += targets + ':\n\t@common=$$(python3 scripts/common_ci.py) && python3 -B "$$common/scripts/quality.py" --root "$(CURDIR)" ' + command + '\n\n'
+        (self.root / 'Makefile').write_text(text)
+
+    def test_quality_runner_optin_only_accepts_six_explicit_services_and_matching_local_wrappers(self):
+        for module in CONTRACT.QUALITY_MODULES:
+            with self.subTest(module=module):
+                doc = self.fixture('service', module)
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                self.assertTrue(self.result(doc).wasSuccessful())
+        for profile, module, optin in [('library', 'github.com/fin-assist/go-library-template', True),
+                                       ('library', 'github.com/fin-assist/go-worker', True),
+                                       ('service', 'example.com/fork', True),
+                                       ('service', 'github.com/fin-assist/user', 'true'),
+                                       ('service', 'github.com/fin-assist/user', 1),
+                                       ('service', 'github.com/fin-assist/user', None)]:
+            with self.subTest(profile=profile, module=module, optin=optin):
+                doc = self.fixture(profile, module)
+                doc['jobs']['go-check']['with']['quality_runner'] = optin
+                self.assertFalse(self.result(doc).wasSuccessful())
+        for module in ('go-library-template', 'go-identity', 'go-idempotency', 'go-outbox',
+                       'go-tombstone', 'go-postgres', 'go-grpc', 'go-migrate', 'go-worker'):
+            doc = self.fixture('library', 'github.com/fin-assist/' + module)
+            doc['jobs']['go-check']['with']['quality_runner'] = False
+            self.assertTrue(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_rejects_local_make_bypass_or_wrong_source_path(self):
+        for mutation in ('make collect-unit', 'python3 scripts/quality.py', 'common/scripts/quality.py', 'true'):
+            with self.subTest(mutation=mutation):
+                doc = self.fixture()
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                path = self.root / 'Makefile'
+                text = path.read_text().replace('"$$common/scripts/quality.py"', mutation)
+                path.write_text(text)
+                self.assertFalse(self.result(doc).wasSuccessful())
+
     def test_missing_call_wrong_uses_input_or_profile_fail(self):
         for change in ('missing', 'uses-pin', 'uses-path', 'input-pin', 'go-profile', 'secrets'):
             with self.subTest(change=change):

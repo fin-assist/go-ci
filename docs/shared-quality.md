@@ -34,8 +34,11 @@ python3 "$common/scripts/quality.py" --root "$consumer" combined
 Go race/count1 прогон, а не script/release checks; локальный `user.TEST_TIMEOUT` передаётся ему явно.
 Разрешён положительный Go duration, например `8m`, `90s`, `1m30s`, `500ms`; нулевой неограниченный
 таймаут и shell-текст отвергаются. Inventory и collectors всегда сохраняют race и timeout8m.
-Go subprocess ограничен также процессным timeout600s, включая компиляцию; `test` использует свой
-положительный timeout +120s. Timeout завершает всю группу процессов, включая потомков.
+Inventory и collectors ограничены также процессным timeout 45 минут, включая компиляцию:
+это прежний бюджет всего Go CI job, а не timeout одного тестового бинарника.
+`test` использует максимум из 45 минут и своего положительного timeout +120s.
+Analyzer сохраняет отдельный timeout 600s. Timeout и отмена завершают всю группу процессов,
+включая потомков.
 
 ## Тонкие совместимые Make targets
 

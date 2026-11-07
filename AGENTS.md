@@ -11,8 +11,8 @@ This repository owns reusable Go CI, lint profiles and their regression tests. I
 - Preserve full-SHA pinning, grouped Renovate updates, matching bootstrap copies and rollback.
 - Ordinary source PRs require owner authorization to merge. Do not change protections or secrets.
 - Request both reviewers with an intentional comment beginning `@codex @claude`; include Security and Tests. After a pushed fix, reply/resolve findings and request both immediately without waiting for CI.
-- FIN-447 keeps Renovate control local: `scripts/renovate_policy.py`, `.github/renovate-policy.json`,
-  `renovate-base.json` and `docs/renovate-policy.md`. Run `make policy-test` with a process timeout for changes.
+- FIN-456 owns one shared Renovate controller/regression suite in `common/renovate/`; `.github/renovate-policy.json`,
+  `renovate-base.json` remain caller data. See `docs/shared-renovate.md` and `docs/renovate-policy.md`. Run `make policy-test` with a process timeout for changes.
   `shared-source` remains required alongside both policy checks. Go compiler/toolchain updates, including
   mixed PRs and `uses-with` Go versions, are manual. Bootstrap, protections and activation are separate
   owner operations; disabled controller code must not read credentials, files or GitHub APIs.

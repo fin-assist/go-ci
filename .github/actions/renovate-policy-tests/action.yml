@@ -1,0 +1,31 @@
+name: Shared Renovate regressions
+description: Run read-only canonical tests against explicit consumer JSON and locked runtime.
+inputs:
+  repository-root:
+    description: Consumer checkout containing JSON configuration and runtime lock.
+    default: ${{ github.workspace }}
+  runtime-path:
+    description: Caller-installed pinned Renovate runtime, required in runtime mode.
+    default: ''
+  mode:
+    description: policy or runtime; setup and npm install remain with the read-only caller.
+    required: true
+  source-revision:
+    description: Full action SHA; omitted only by the source host using its local action.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Test shared controller against consumer data
+      shell: bash
+      env:
+        POLICY_ACTION_PATH: ${{ github.action_path }}
+        POLICY_ROOT: ${{ inputs.repository-root }}
+        POLICY_MODE: ${{ inputs.mode }}
+        POLICY_RUNTIME: ${{ inputs.runtime-path }}
+        POLICY_REVISION: ${{ inputs.source-revision }}
+      run: |
+        args=(--root "$POLICY_ROOT" --mode "$POLICY_MODE")
+        if [ -n "$POLICY_RUNTIME" ]; then args+=(--runtime "$POLICY_RUNTIME"); fi
+        if [ -n "$POLICY_REVISION" ]; then args+=(--source-revision "$POLICY_REVISION"); fi
+        timeout 300s python3 -I "$POLICY_ACTION_PATH/../../../common/renovate/test.py" "${args[@]}"

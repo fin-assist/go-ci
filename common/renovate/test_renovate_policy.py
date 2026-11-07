@@ -380,3 +380,28 @@ class MissingTargetBaselineTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StageReceiptAdapterTests(unittest.TestCase):
+    def test_stage_retry_receipts_roundtrip_and_deploy_receipts_are_rejected(self):
+        import copy
+        api = GitHub('token', 'fin-assist/infra')
+        receipt = {'1:abc': {'state': {'sha': 'abc', 'runs': {
+            'stage.yml': {'run_id': 1, 'attempt': 1, 'retried': True},
+            'renovate-policy-tests.yml': {'run_id': 2, 'attempt': 1, 'retried': False},
+        }}}}
+        stored = {}
+        def request(method, path, data):
+            self.assertEqual((method, path), ('PUT', 'contents/state.json'))
+            self.assertEqual(data['sha'], 'previous-file-sha')
+            stored.update(data)
+            return {'content': {'sha': 'new-file-sha'}}
+        api.request = request
+        self.assertEqual(api.write_receipts(receipt, 'previous-file-sha'), 'new-file-sha')
+        api.get = lambda path: {'sha': 'new-file-sha', 'content': stored['content']}
+        self.assertEqual(api.read_receipts(), (receipt, 'new-file-sha'))
+        for workflow in ('stage-deploy.yml', 'unknown.yml'):
+            invalid = copy.deepcopy(receipt)
+            invalid['1:abc']['state']['runs'][workflow] = invalid['1:abc']['state']['runs'].pop('stage.yml')
+            with self.subTest(workflow=workflow), self.assertRaises(ValueError):
+                api.write_receipts(invalid, 'new-file-sha')

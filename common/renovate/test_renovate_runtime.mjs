@@ -1,7 +1,7 @@
 /**
  * Optional contract test against the real, pinned Renovate package (Node 24).
  * Install the versioned fixture lock with npm ci --ignore-scripts, then:
- * RENOVATE_RUNTIME=/path/to/prefix node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
+ * python3 -I common/renovate/test.py --root /consumer --mode runtime --runtime /locked/prefix --source-revision SHA
  * The runner must impose a process timeout. No network or repository mutations occur.
  */
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 
 assert.ok(process.env.RENOVATE_RUNTIME, 'Set RENOVATE_RUNTIME to the temporary npm prefix');
 const pkg = realpathSync(resolve(process.env.RENOVATE_RUNTIME, 'node_modules/renovate'));
-const pinnedVersion=JSON.parse(readFileSync(new URL('./renovate-runtime/package.json',import.meta.url))).dependencies.renovate;
+const pinnedVersion=JSON.parse(readFileSync(process.env.RENOVATE_RUNTIME_MANIFEST)).dependencies.renovate;
 assert.match(pinnedVersion,/^[0-9]+\.[0-9]+\.[0-9]+$/);
 assert.equal(JSON.parse(readFileSync(resolve(pkg,'package.json'))).version,pinnedVersion);
 const mod = (path) => pathToFileURL(resolve(pkg, 'dist', path)).href;

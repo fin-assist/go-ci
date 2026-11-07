@@ -1,0 +1,99 @@
+/** Exercise the actual Renovate extractor and baseline matcher for manual Go. */
+import assert from 'node:assert/strict';
+import { readFileSync, realpathSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+
+assert.ok(process.env.RENOVATE_RUNTIME);
+const pkg = realpathSync(resolve(process.env.RENOVATE_RUNTIME, 'node_modules/renovate'));
+const pinned = JSON.parse(readFileSync(process.env.RENOVATE_RUNTIME_MANIFEST)).dependencies.renovate;
+assert.equal(JSON.parse(readFileSync(resolve(pkg, 'package.json'))).version, pinned);
+const mod = name => import(pathToFileURL(resolve(pkg, 'dist', name)).href);
+const { init } = await mod('logger/index.js');
+await init();
+const { GlobalConfig } = await mod('config/global.js');
+GlobalConfig.set({ localDir: process.cwd() });
+const { extractPackageFile } = await mod('modules/manager/github-actions/extract.js');
+const { applyPackageRules } = await mod('util/package-rules/index.js');
+const root = process.env.RENOVATE_CONSUMER_ROOT;
+const baseline = JSON.parse(readFileSync(resolve(root, 'renovate-base.json')));
+let workflow;
+try { workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8'); } catch { workflow = ''; }
+const source = JSON.parse(readFileSync(resolve(root, '.github/renovate-policy.json'))).ciChecks?.includes('shared-source');
+if (!source) workflow = 'jobs:\n  sample:\n    steps:\n      - uses: actions/setup-go@v7\n        with:\n          go-version: 1.26.0\n';
+const extracted = await extractPackageFile(workflow, '.github/workflows/ci.yml');
+const go = extracted.deps.find(dep => dep.depType === 'uses-with' && dep.depName === 'go');
+assert.ok(go, 'The real source workflow must expose its Go version');
+assert.equal(go.packageName, 'actions/go-versions');
+assert.equal(go.datasource, 'github-releases');
+const configured = await applyPackageRules({ ...go, manager: 'github-actions',
+  packageRules: baseline.packageRules });
+if (source) assert.equal(configured.enabled, false, 'Go uses-with updates must remain manual');
+for (const depType of ['golang', 'toolchain']) {
+  const value = await applyPackageRules({ manager: 'gomod', depType, depName: 'go',
+    datasource: 'golang-version', packageRules: baseline.packageRules });
+  if (source) assert.equal(value.enabled, false);
+}
+const action = extracted.deps.find(dep => dep.depName === 'actions/setup-go');
+assert.ok(action);
+const configuredAction = await applyPackageRules({ ...action, manager: 'github-actions',
+  packageRules: baseline.packageRules });
+assert.notEqual(configuredAction.enabled, false, 'Updating the setup action itself stays permitted');
+const controller = process.env.RENOVATE_POLICY_SCRIPT;
+const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).parent)); spec=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); import base64; metadata=''.join(m.COMPACT_UPDATE+base64.b64encode(json.dumps(item).encode()).decode()+' -->\\n' for item in json.loads(sys.stdin.read())); print(json.dumps(m.manual_go_update(m.updates(metadata))))";
+const mixed = [{ ...go, newValue: '1.27.3' }, { depName: 'actions/checkout',
+  datasource: 'github-tags', newValue: 'v7' }];
+assert.equal(JSON.parse(execFileSync('python3', ['-c', code, controller], {
+  input: JSON.stringify(mixed), encoding: 'utf8', timeout: 5000 })), true);
+console.log(source ? 'PASS: source uses-with Go extraction is disabled by baseline and guarded in mixed signed metadata' : 'PASS: real sample uses-with Go extraction and mixed signed metadata remain manual');
+
+// Extract every shared action/manifest/test-input pin with the real managers and
+// apply the caller's reviewed package rules. This catches a selector that silently
+// stops updating source-revision, as well as action pins split into another group.
+const manifestPath = existsSync(resolve(root, '.finassist-ci.json'))
+  ? resolve(root, '.finassist-ci.json') : resolve(root, '.github/renovate-source.json');
+if (existsSync(manifestPath)) {
+  const revision = JSON.parse(readFileSync(manifestPath)).revision;
+  const { extractPackageFile: extractRegex } = await mod('modules/manager/custom/regex/index.js');
+  const { matchRegexOrGlob } = await mod('util/string-match.js');
+  const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
+  const files = ['.github/workflows/renovate-policy.yml', '.github/workflows/renovate-policy-tests.yml',
+    '.finassist-ci.json', '.github/renovate-source.json'];
+  const dependencies = [];
+  for (const file of files) {
+    if (!existsSync(resolve(root, file))) continue;
+    const content = readFileSync(resolve(root, file), 'utf8');
+    if (file.endsWith('.yml')) {
+      const result = await extractPackageFile(content, file);
+      for (const dep of result?.deps ?? []) {
+        if (dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci' || dep.depName?.startsWith('fin-assist/go-ci/'))
+          dependencies.push({ ...dep, manager: 'github-actions', packageFile: file });
+      }
+    }
+    for (const custom of baseline.customManagers ?? []) {
+      if (!(custom.managerFilePatterns ?? []).some(pattern => matchRegexOrGlob(file, pattern))) continue;
+      const result = await extractRegex(content, file, custom);
+      for (const dep of result?.deps ?? []) {
+        if (dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci')
+          dependencies.push({ ...dep, manager: 'custom.regex', packageFile: file });
+      }
+    }
+  }
+  assert.ok(dependencies.some(dep => dep.packageFile === '.github/workflows/renovate-policy.yml'));
+  assert.ok(dependencies.filter(dep => dep.packageFile === '.github/workflows/renovate-policy-tests.yml').length >= 4,
+    'Both action refs and both source-revision inputs must be extracted');
+  assert.ok(dependencies.some(dep => dep.packageFile.endsWith('.json')), 'The local source manifest pin must be extracted');
+  for (const dep of dependencies) {
+    normalizeDepNames(dep);
+    assert.equal(dep.currentDigest, revision, `${dep.packageFile}: source pin drift`);
+    assert.equal(dep.currentValue, 'main', 'Full action SHA annotations must retain the lookup branch');
+    assert.equal(dep.datasource, 'github-digest');
+    const configured = await applyPackageRules({ ...dep, packageRules: baseline.packageRules });
+    assert.notEqual(configured.enabled, false, 'Shared action pins must not be skipped as unversioned refs');
+    assert.ok(['finassist-shared-go-ci', 'finassist-shared-renovate'].includes(configured.groupSlug),
+      `${dep.depName}: action, manifest and test-input pins must share the reviewed group`);
+    assert.equal(configured.pinDigests, true);
+  }
+  console.log(`PASS: actual regex/actions extraction keeps ${dependencies.length} immutable source pins grouped`);
+}

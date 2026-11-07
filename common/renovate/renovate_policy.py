@@ -6,6 +6,10 @@ import fnmatch
 import json
 import os
 from pathlib import Path
+import sys
+
+# Isolated execution imports only the sibling modules from this reviewed source.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import re
 import urllib.error
 import urllib.parse
@@ -19,6 +23,18 @@ MARKER = '<!-- fin211-state '
 UPDATES = '<!-- fin211-updates '
 COMPACT_UPDATE = '<!-- fin211-update '
 PER_UPDATE_NOTE = "<!-- fin211-update {{{encodeBase64 (toJSON (toObject 'depName' depName 'packageName' packageName 'newValue' newValue 'datasource' datasource 'newDigest' newDigest 'newMajor' newMajor))}}} -->"
+
+
+def read_caller_data(root, relative):
+    """Read caller JSON without following a checkout symlink outside its data tree."""
+    root = root.resolve()
+    path = root / relative
+    current = path
+    while current != root:
+        if current.is_symlink():
+            raise ValueError('Caller configuration must not contain symlinks')
+        current = current.parent
+    return path.read_text()
 METADATA_TEMPLATE = '{{#each upgrades}}' + PER_UPDATE_NOTE + '\n{{/each}}'
 
 
@@ -196,6 +212,7 @@ class GitHub:
     def __init__(self, token, repo, read_token=None):
         self.token, self.repo, self.read_token = token, repo, read_token
         self.controller_login = None
+        self.root = Path.cwd()
 
     def request(self, method, path, data=None):
         url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + ('/' + path if path else '')
@@ -291,7 +308,7 @@ class GitHub:
             if error.code != 404:
                 raise
         policy = {'baseBranchPatterns': [self.base()], 'packageRules': []}
-        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}, {'path': 'base.json', 'mode': '100644', 'type': 'blob', 'content': Path('renovate-base.json').read_text()}, {'path': 'state.json', 'mode': '100644', 'type': 'blob', 'content': '{}\n'}]})
+        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}, {'path': 'base.json', 'mode': '100644', 'type': 'blob', 'content': read_caller_data(self.root, 'renovate-base.json')}, {'path': 'state.json', 'mode': '100644', 'type': 'blob', 'content': '{}\n'}]})
         commit = self.request('POST', 'git/commits', {'message': 'Initialize generated Renovate policy', 'tree': tree['sha'], 'parents': []})
         self.request('POST', 'git/refs', {'ref': 'refs/heads/' + POLICY_BRANCH, 'sha': commit['sha']})
 
@@ -539,7 +556,7 @@ def validate_receipts(data):
         if set(state) != {'sha', 'runs'} or key.split(':', 1)[1] != state['sha'] or not isinstance(state['runs'], dict) or not state['runs']:
             raise ValueError('Invalid protected retry state')
         for workflow, run in state['runs'].items():
-            if (workflow not in ('ci.yml', 'renovate-policy-tests.yml') or not isinstance(run, dict)
+            if (workflow not in ('ci.yml', 'stage.yml', 'renovate-policy-tests.yml') or not isinstance(run, dict)
                     or set(run) != {'run_id', 'attempt', 'retried'}
                     or type(run['run_id']) is not int or run['run_id'] < 1
                     or type(run['attempt']) is not int or run['attempt'] < 1
@@ -570,7 +587,7 @@ def explain_spent_retry(api, config, number, key, receipt, body):
     api.write_receipts(latest, latest_sha)
 
 
-def reconcile(api, config, trigger=None):
+def reconcile(api, config, trigger=None, mutate_prs=True):
     if api.identity() != config['controllerLogin']:
         raise ValueError('Mutation credential identity differs from controllerLogin; no retry claim is allowed')
     api.controller_login = config['controllerLogin']
@@ -585,6 +602,9 @@ def reconcile(api, config, trigger=None):
         policy['baseBranchPatterns'] = [base]
         api.write_policy(policy, policy_sha)
         policy, policy_sha = api.read_policy()
+    if not mutate_prs:
+        print('Renovate PR mutations disabled; configuration synchronized')
+        return
     failures = []
     for candidate in api.pages('pulls?state=open'):
         try:
@@ -618,7 +638,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
     if manual_go_update(items):
         print(f'PR {number}: Go compiler/toolchain update requires owner review')
         return
-    workflow_checks = {'ci.yml': config.get('ciChecks', [name for name in config['requiredChecks']
+    workflow_checks = {config.get('ciWorkflow', 'ci.yml'): config.get('ciChecks', [name for name in config['requiredChecks']
                                                             if name not in ('Renovate policy tests', 'Renovate runtime contract')])}
     if 'Renovate policy tests' in config['requiredChecks']:
         workflow_checks['renovate-policy-tests.yml'] = [name for name in ('Renovate policy tests', 'Renovate runtime contract') if name in config['requiredChecks']]
@@ -777,26 +797,39 @@ def reconcile_pr(api, config, base, candidate, trigger):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=Path, help='Caller main checkout containing JSON data only')
     parser.add_argument('--bootstrap', action='store_true', help='Publish the initial preset branch; does not enable automation')
     args = parser.parse_args()
     if args.bootstrap:
         token = os.environ.get('RENOVATE_POLICY_TOKEN')
         if not token:
             raise ValueError('RENOVATE_POLICY_TOKEN is required')
-        GitHub(token, os.environ['GITHUB_REPOSITORY']).bootstrap()
+        if args.root is None:
+            raise ValueError('--root is required for explicit bootstrap')
+        api = GitHub(token, os.environ['GITHUB_REPOSITORY'])
+        api.root = args.root.resolve()
+        api.bootstrap()
         return
     # A repository copied from the template needs no credential or infrastructure
     # until the owner explicitly activates it. Disabled means no API calls at all.
     if os.environ.get('RENOVATE_POLICY_ENABLED') != 'true':
         print('Renovate policy disabled; no API requests or mutations')
         return
+    if os.environ.get('GITHUB_ACTIONS') == 'true' and (
+            os.environ.get('GITHUB_REF') != 'refs/heads/main'
+            or os.environ.get('GITHUB_EVENT_NAME') not in ('workflow_run', 'workflow_dispatch', 'schedule')):
+        raise ValueError('Controller requires a main-only trusted trigger')
     token = os.environ.get('RENOVATE_POLICY_TOKEN')
     if not token:
         raise ValueError('RENOVATE_POLICY_TOKEN is required; GITHUB_TOKEN is not a merge credential')
-    config = json.loads(Path('.github/renovate-policy.json').read_text())
+    if args.root is None:
+        raise ValueError('--root is required for caller JSON data')
+    config = json.loads(read_caller_data(args.root.resolve(), '.github/renovate-policy.json'))
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     trigger = event.get('workflow_run') if os.environ.get('GITHUB_EVENT_NAME') == 'workflow_run' else None
-    reconcile(GitHub(token, os.environ['GITHUB_REPOSITORY'], os.environ.get('GITHUB_READ_TOKEN')), config, trigger)
+    api = GitHub(token, os.environ['GITHUB_REPOSITORY'], os.environ.get('GITHUB_READ_TOKEN'))
+    api.root = args.root.resolve()
+    reconcile(api, config, trigger)
 
 
 if __name__ == '__main__':

@@ -6,7 +6,7 @@
 - `common/configs/`, `common/versions.json`: профили и закреплённые версии линтеров.
 - `common/bootstrap.py`: единственный канонический bootstrap, побайтно копируемый потребителями.
 - `common/tests/`, `common/probe_lint.py`: регрессионные тесты и реальные разрешённые/запрещённые lint-сценарии.
-- `scripts/renovate_policy.py`, `renovate-base.json`: локальный контроллер обновлений и рассмотренный baseline ([FIN-447](https://finassist.youtrack.cloud/issue/FIN-447)). [Подготовка, защиты и отдельная активация](docs/renovate-policy.md).
+- `common/renovate/`: единый контроллер Renovate и его Python/JS-регрессии для 19 репозиториев; `renovate-base.json` остаётся локальными данными ([FIN-447](https://finassist.youtrack.cloud/issue/FIN-447)). [Подготовка, защиты и отдельная активация](docs/renovate-policy.md).
 
 [Профили, параметры, локальные команды, доверие и порядок перехода](docs/shared-go-ci.md).
 
@@ -37,3 +37,5 @@ Renovate обновляет pins одним PR. Если `common/bootstrap.py` �
 
 Перед ревью применяются [профильные навыки](docs/review-skills/README.md) из проверяемой ревизии.
 Обязательные требования, выбор и ограничения — в `AGENTS.md`, раздел `Code Review Rules`.
+
+[Общий контроллер Renovate, immutable pins и границы доверия (FIN-456)](docs/shared-renovate.md).

@@ -53,8 +53,9 @@ jobs:
         with:
           python-version: '3.15'
       - name: Reconcile Renovate PRs
-        env:
-          RENOVATE_POLICY_ENABLED: ${{ vars.RENOVATE_POLICY_ENABLED }}
-          GITHUB_READ_TOKEN: ${{ github.token }}
-          RENOVATE_POLICY_TOKEN: ${{ secrets.RENOVATE_POLICY_TOKEN }}
-        run: timeout 540s python3 scripts/renovate_policy.py
+        uses: ./.github/actions/renovate-policy
+        with:
+          enabled: ${{ needs.gate.outputs.enabled }}
+          repository-root: ${{ github.workspace }}
+          token: ${{ secrets.RENOVATE_POLICY_TOKEN }}
+          read-token: ${{ github.token }}

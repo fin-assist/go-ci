@@ -1,3 +1,4 @@
+from paths import consumer_root, consumer_repository
 """Manual Go toolchains remain outside merge, retry and close automation."""
 import base64
 import copy
@@ -59,8 +60,9 @@ class ManualGoTests(unittest.TestCase):
                         self.assertEqual(api.receipts, receipts)
                         self.assertEqual(api.pr['state'], 'open')
 
+    @unittest.skipUnless(consumer_repository() == 'fin-assist/go-ci', 'Source CI data only')
     def test_source_ci_configuration_and_workflow_names_match(self):
-        root = Path(__file__).resolve().parents[1]
+        root = consumer_root()
         config = json.loads((root / '.github/renovate-policy.json').read_text())
         self.assertEqual(config['ciChecks'], ['shared-source'])
         self.assertEqual(config['requiredChecks'], [

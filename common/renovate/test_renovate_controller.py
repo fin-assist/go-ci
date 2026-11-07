@@ -873,3 +873,57 @@ class MergeabilityBoundaryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ConfigurationOnlyTests(unittest.TestCase):
+    def test_disabled_pr_mutations_still_sync_baseline_and_single_target(self):
+        class ConfigFake(Fake):
+            def sync_baseline(self,base):self.synced=base
+            def pages(self,*args,**kwargs):raise AssertionError('PRs must not be evaluated in sync-only mode')
+        api=ConfigFake();api.target='release/0.2.12'
+        reconcile(api,api.config,mutate_prs=False)
+        self.assertEqual(api.synced,'release/0.2.12')
+        self.assertEqual(api.policy['baseBranchPatterns'],['release/0.2.12'])
+        self.assertEqual([action[0] for action in api.actions],['policy'])
+
+
+
+class StageWorkflowTests(unittest.TestCase):
+    """The infra checks belong to stage.yml, never to the deployment workflow."""
+    def stage_api(self):
+        api = MultiWorkflowFake()
+        api.config.update(ciWorkflow='stage.yml', ciChecks=['stage'],
+                          requiredChecks=['stage', 'Renovate policy tests'])
+        api.runs['stage.yml'] = api.runs.pop('ci.yml')
+        api.jobs_by_workflow['stage.yml'] = api.jobs_by_workflow.pop('ci.yml')
+        api.jobs[0]['name'] = 'stage'
+        return api
+
+    def test_stage_configuration_green_merges_expected_sha(self):
+        api = self.stage_api()
+        reconcile(api, api.config)
+        self.assertIn(('pulls/1/merge', {'sha': 'abc', 'merge_method': 'squash'}), api.actions)
+
+    def test_failed_stage_configuration_gets_only_its_single_retry(self):
+        api = self.stage_api()
+        api.runs['stage.yml']['conclusion'] = 'failure'
+        api.jobs[0]['conclusion'] = 'failure'
+        reconcile(api, api.config)
+        self.assertIn(('actions/runs/1/rerun-failed-jobs', None), api.actions)
+        self.assertFalse(any(path == 'actions/runs/2/rerun-failed-jobs' for path, _ in api.actions))
+        self.assertFalse(any(path == 'pulls/1/merge' for path, _ in api.actions))
+
+    def test_missing_or_unfinished_stage_does_not_use_other_green_workflow(self):
+        for state in (None, 'in_progress', 'skipped', 'cancelled'):
+            with self.subTest(state=state):
+                api = self.stage_api()
+                # An unrelated green ci.yml/deploy run must not satisfy stage.
+                api.runs['ci.yml'] = dict(api.run, id=99)
+                if state is None:
+                    api.runs['stage.yml'] = None
+                elif state == 'in_progress':
+                    api.runs['stage.yml']['status'] = state
+                else:
+                    api.runs['stage.yml']['conclusion'] = state
+                reconcile(api, api.config)
+                self.assertEqual(api.actions, [])

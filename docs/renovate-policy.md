@@ -1,6 +1,6 @@
 # Автоматизация Renovate (FIN-447)
 
-В `go-ci` добавлен тот же локальный контроллер FIN-211/FIN-237, что в
+В `go-ci` используется общий рассмотренный контроллер FIN-211/FIN-237 из `common/renovate/`, как в
 [`go-postgres` на `1d02eff`](https://github.com/fin-assist/go-postgres/tree/1d02eff31276d9dbbb07755d7c9ee4f7cc0a9580).
 Изменения source-кода проходят обычное ревью и merge владельца. После **отдельной активации**
 контроллер может сливать только подтверждённые полностью ботские обновления зависимостей.
@@ -92,7 +92,7 @@ Recovery допускает повторное появление **вручну
    CLI тоже завершает работу до чтения config/event/credentials и API. В паузе нет baseline/target sync,
    merge/retry/close; сам hosted Renovate продолжает работать независимо.
 2. **До merge `renovate.json`** явно bootstrap собственную config-only ветку:
-   `GITHUB_REPOSITORY=fin-assist/go-ci python3 scripts/renovate_policy.py --bootstrap`.
+   `GITHUB_REPOSITORY=fin-assist/go-ci python3 -I common/renovate/renovate_policy.py --root "$PWD" --bootstrap`.
    Команда требует уже установленный в окружении `RENOVATE_POLICY_TOKEN`, не выводит его и
    не включает автоматизацию. Существующая ветка никогда не перезаписывается.
    Настоящий resolver обоих опубликованных presets проверяется отдельно; PR этого не доказывает.
@@ -121,18 +121,17 @@ native allow_auto_merge остаётся выключенным, bypass не д�
 включая mixed PR при success и failure. `make test`, `make lint`, `make probe` сохраняют
 существующие source gates и совместимость15 потребителей. Production common code/bootstrap не меняется.
 
-Node24 соответствует engines закреплённого Renovate. `scripts/renovate-runtime/package.json` и lock
-закрепляют runtime и integrity транзитивных зависимостей. С process timeout600 выполнить
-`npm ci --ignore-scripts --no-audit --no-fund` в этом каталоге; install scripts не исполняются.
-`RENOVATE_RUNTIME=$PWD/scripts/renovate-runtime` задаёт расположение runtime для трёх fixtures:
-`test_renovate_runtime.mjs`, `test_renovate_metadata_runtime.mjs` (Node с
-`--experimental-test-module-mocks`) и `test_renovate_go_runtime.mjs`. Каждый процесс ограничивается90s.
-Fixtures вызывают реальные branchify/processBranch/Dashboard/renderer/extractor/matcher;
-внешние mutations/network adapters заменены фейками. Native RE2 install отсутствует — fixture явно
-сообщает JavaScript RegExp fallback, а не имитирует проверку hosted RE2.
+Node берётся из существующего workflow и engines runtime manifest; перенос не обновляет версии.
+`scripts/renovate-runtime/package.json` и lock остаются данными потребителя и закрепляют integrity
+транзитивных зависимостей. С process timeout600 выполнить `npm ci --ignore-scripts --no-audit --no-fund`
+в этом каталоге; install scripts не исполняются. Все три fixtures вызывает центральный runner:
+`python3 -I common/renovate/test.py --root "$PWD" --mode runtime --runtime "$PWD/scripts/renovate-runtime"`.
+Каждый fixture ограничен90s. Они вызывают реальные branchify/processBranch/Dashboard/renderer/
+extractor/matcher; внешние mutations/network adapters заменены фейками. Native RE2 install отсутствует:
+fixture явно сообщает JavaScript RegExp fallback, а не имитирует проверку hosted RE2.
 
 После bootstrap опубликованные presets проверяют настоящим resolver с внешним timeout180:
-`RENOVATE_RUNTIME=<runtime prefix> node scripts/verify_renovate_presets.mjs`.
+`RENOVATE_RUNTIME=<runtime prefix> node common/renovate/verify_renovate_presets.mjs`.
 Необходимый read credential передаётся в RENOVATE_TOKEN, не выводится. Hosted App loading и
 controller runtime — отдельные доказательства после настройки/активации.
 
@@ -158,3 +157,14 @@ controller runtime — отдельные доказательства посл�
 policy и current run. Изолированные mutations удаляют только соответствующую проверку свежести.
 Изменение касается автоматизации репозитория; runtime, API, версии, workflow и внешние настройки
 не меняются. Merge и эксплуатационные операции остаются отдельными действиями владельца.
+
+## Общий источник FIN-456
+
+Production-код и все lifecycle/runtime-регрессии перенесены в `common/renovate/`;
+потребители закрепляют composite actions полным SHA. Локальные JSON config/baseline и runtime lock
+сохранены, generated state/presets не меняются. `make policy-test` вызывает общий read-only runner
+с явным consumer root. Для runtime используйте `python3 -I common/renovate/test.py --root "$PWD"
+--mode runtime --runtime <установленный pinned runtime>`. Bootstrap выполняется только отдельной
+явной командой `python3 -I <common>/renovate/renovate_policy.py --root <consumer> --bootstrap`.
+Обычный привилегированный job вызывает action и не исполняет scripts потребителя.
+[Интерфейс, trust boundary, pin/update/rollback и self-host исключение](shared-renovate.md).

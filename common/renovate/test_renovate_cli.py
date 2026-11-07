@@ -28,7 +28,7 @@ class EntrypointTests(unittest.TestCase):
     def test_disabled_with_credentials_never_creates_api_client_or_reads_inputs(self):
         env = {'RENOVATE_POLICY_TOKEN': 'policy-placeholder',
                'GITHUB_TOKEN': 'read-placeholder'}
-        with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['controller']), \
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['controller', '--root', str(Path.cwd())]), \
                 patch.object(renovate_policy, 'GitHub') as api, \
                 patch.object(Path, 'read_text') as read, contextlib.redirect_stdout(io.StringIO()):
             renovate_policy.main()
@@ -37,7 +37,7 @@ class EntrypointTests(unittest.TestCase):
 
     def test_enabled_requires_merge_credential_even_with_github_token(self):
         env = {'RENOVATE_POLICY_ENABLED': 'true', 'GITHUB_TOKEN': 'read-placeholder'}
-        with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['controller']), \
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['controller', '--root', str(Path.cwd())]), \
                 patch.object(renovate_policy, 'GitHub') as api:
             with self.assertRaisesRegex(ValueError, 'GITHUB_TOKEN is not a merge credential'):
                 renovate_policy.main()
@@ -45,7 +45,7 @@ class EntrypointTests(unittest.TestCase):
 
     def test_bootstrap_requires_explicit_merge_credential_while_disabled(self):
         with patch.dict(os.environ, {'GITHUB_TOKEN': 'read-placeholder'}, clear=True), \
-                patch.object(sys, 'argv', ['controller', '--bootstrap']), \
+                patch.object(sys, 'argv', ['controller', '--root', str(Path.cwd()), '--bootstrap']), \
                 patch.object(renovate_policy, 'GitHub') as api:
             with self.assertRaisesRegex(ValueError, 'RENOVATE_POLICY_TOKEN is required'):
                 renovate_policy.main()
@@ -56,7 +56,7 @@ class EntrypointTests(unittest.TestCase):
             env = {'RENOVATE_POLICY_ENABLED': enabled, 'RENOVATE_POLICY_TOKEN': 'policy-placeholder',
                    'GITHUB_REPOSITORY': 'fin-assist/example'}
             with self.subTest(enabled=enabled), patch.dict(os.environ, env, clear=True), \
-                    patch.object(sys, 'argv', ['controller', '--bootstrap']), \
+                    patch.object(sys, 'argv', ['controller', '--root', str(Path.cwd()), '--bootstrap']), \
                     patch.object(renovate_policy, 'GitHub') as api, \
                     patch.object(renovate_policy, 'reconcile') as reconcile:
                 renovate_policy.main()
@@ -72,7 +72,7 @@ class EntrypointTests(unittest.TestCase):
                    'GITHUB_READ_TOKEN': 'read-placeholder', 'GITHUB_REPOSITORY': 'fin-assist/example',
                    'GITHUB_EVENT_PATH': 'event.json', 'GITHUB_EVENT_NAME': name}
             with self.subTest(name=name), patch.dict(os.environ, env, clear=True), \
-                    patch.object(sys, 'argv', ['controller']), \
+                    patch.object(sys, 'argv', ['controller', '--root', str(Path.cwd())]), \
                     patch.object(Path, 'read_text', side_effect=[json.dumps(config), json.dumps(event)]), \
                     patch.object(renovate_policy, 'GitHub') as api, \
                     patch.object(renovate_policy, 'reconcile') as reconcile:
@@ -80,3 +80,22 @@ class EntrypointTests(unittest.TestCase):
                 api.assert_called_once_with('policy-placeholder', 'fin-assist/example', 'read-placeholder')
                 reconcile.assert_called_once_with(api.return_value, config,
                                                   event['workflow_run'] if name == 'workflow_run' else None)
+
+    def test_disabled_with_credentials_never_reads_tokens_inputs_or_creates_api(self):
+        class GuardedEnvironment(dict):
+            def get(self, key, default=None):
+                if key in ('RENOVATE_POLICY_TOKEN', 'GITHUB_READ_TOKEN', 'GITHUB_TOKEN'):
+                    raise AssertionError('Disabled controller read a credential')
+                return super().get(key, default)
+        for value in (None, '', 'false', 'TRUE', 'True', '1'):
+            env = GuardedEnvironment(RENOVATE_POLICY_TOKEN='policy-placeholder',
+                                     GITHUB_TOKEN='read-placeholder')
+            if value is not None:
+                env['RENOVATE_POLICY_ENABLED'] = value
+            with self.subTest(value=value), patch.object(os, 'environ', env), \
+                    patch.object(sys, 'argv', ['controller', '--root', str(Path.cwd())]), \
+                    patch.object(renovate_policy, 'GitHub') as api, \
+                    patch.object(Path, 'read_text') as read, contextlib.redirect_stdout(io.StringIO()):
+                renovate_policy.main()
+            api.assert_not_called()
+            read.assert_not_called()

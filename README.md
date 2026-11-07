@@ -2,13 +2,16 @@
 
 Единый источник CI и конфигураций линтеров 15 Go-репозиториев FinAssist ([FIN-372](https://finassist.youtrack.cloud/issue/FIN-372)). Отдельный репозиторий не является Go-сервисом, библиотекой или шаблоном и не содержит искусственного Go-модуля ради CI.
 
-- `.github/workflows/shared-*.yml`: reusable Go/coverage, lint, SQL, API compatibility и image workflows.
+- `.github/workflows/shared-*.yml`: reusable Go/coverage, lint, SQL, API compatibility, image и service release workflows.
 - `common/configs/`, `common/versions.json`: профили и закреплённые версии линтеров.
 - `common/bootstrap.py`: единственный канонический bootstrap, побайтно копируемый потребителями.
 - `common/tests/`, `common/probe_lint.py`: регрессионные тесты и реальные разрешённые/запрещённые lint-сценарии.
 - `common/renovate/`: единый контроллер Renovate и его Python/JS-регрессии для 19 репозиториев; `renovate-base.json` остаётся локальными данными ([FIN-447](https://finassist.youtrack.cloud/issue/FIN-447)). [Подготовка, защиты и отдельная активация](docs/renovate-policy.md).
 
 [Профили, параметры, локальные команды, доверие и порядок перехода](docs/shared-go-ci.md).
+
+FIN-457: [тесты и coverage](docs/shared-quality.md), [stage-артефакты](docs/stage-artifacts.md),
+[parser CHANGELOG](docs/changelog-tooling.md), [сервисные GitHub Release](docs/service-release.md).
 
 ## Проверка источника
 

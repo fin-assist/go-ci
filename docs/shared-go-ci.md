@@ -99,7 +99,19 @@ Coverage guards и относящиеся к ним проверочные ск�
 
 Обычный PR/fork CI имеет `contents: read`, checkout без сохранения credentials и не получает write-доступа. Передача `GO_MODULES_TOKEN` явная, без `secrets: inherit`; общий Go/API CI использует его только на доверенном `push`, а не при выполнении PR-кода. У образов остаётся передача токена через BuildKit netrc secret вместо build args или логов. Отсутствие доступа к приватному модулю не является основанием выдать секрет недоверенному PR или признать невыполненный gate успешным.
 
-Привилегированные Claude/release workflows остаются локальными намеренно. FIN-456 выносит код Renovate в [отдельные общие actions](shared-renovate.md), сохраняя локальные triggers, exact activation gate, main-only Environment и изоляцию credentials. Их триггеры, проверки происхождения PR, отдельные права, Environment, секреты и версии контроллера различаются. Например, у `bank-bff` уже есть проверка источника PR до write-enabled Claude; унификация не должна её стереть. Контроллер Renovate продолжает исполнять проверенный код `main` и не читает исполняемый PR-код/artifacts с write-токеном. Владелец по-прежнему выпускает теги библиотек сам.
+Claude и workflows выпуска библиотек остаются локальными намеренно. FIN-457 переносит
+публикацию **сервисных** GitHub Release в [общий `shared-release.yml`](service-release.md):
+отдельный job сохраняет `contents: write`, исполняет только закреплённый общий parser и
+не исполняет PR-код. Локальные callers сохраняют свои triggers и inputs без передачи secrets.
+FIN-456 выносит код Renovate в [общие actions](shared-renovate.md), сохраняя локальные
+triggers, exact activation gate, main-only Environment и изоляцию credentials.
+Триггеры, проверки происхождения PR, Environment и секреты разных автоматизаций не унифицируются.
+Например, у `bank-bff` уже есть проверка источника PR до write-enabled Claude; унификация не должна её стереть.
+Контроллер Renovate продолжает исполнять проверенный код `main` и не читает исполняемый PR-код/artifacts
+с write-токеном. Владелец по-прежнему выпускает теги библиотек сам.
+
+FIN-457 также описывает [общий runner тестов и coverage](shared-quality.md),
+[упаковку stage-артефактов](stage-artifacts.md) и [parser CHANGELOG](changelog-tooling.md).
 
 ## Обновление правила и откат
 

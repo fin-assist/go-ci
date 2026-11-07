@@ -22,6 +22,15 @@ go-grpc, go-migrate, go-worker. Специализированные прове�
 Renovate обновляет эти значения одной группой; самостоятельный bump одного поля отклоняется contract test.
 Версии Renovate runtime и зависимости не повышаются переносом.
 
+Новые managers для `source-revision`, сервисного release `revision` и специального manifest
+находятся непосредственно в активном `renovate.json`. У android/contracts/infra там же находится
+новая общая группа. Они доступны hosted Renovate при выключенном write-контроллере: локальный
+`renovate-base.json` сам по себе не заменяет preset `base.json` защищённой ветки. Прежние FIN-372
+managers и группы сохраняют рассмотренные места; baseline миграции равен прежним данным,
+поэтому последующая синхронизация не дублирует новые selectors. Runtime-регрессия извлекает
+новые inputs из одного активного config, затем проверяет весь объединённый config штатным
+движком Renovate, включая release inputs и группировку.
+
 ## Привилегированное исполнение
 
 Тонкий workflow потребителя сохраняет workflow_run/schedule/manual triggers и concurrency.

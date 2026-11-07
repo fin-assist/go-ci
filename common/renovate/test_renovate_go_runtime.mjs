@@ -58,12 +58,43 @@ if (existsSync(manifestPath)) {
   const { mergeChildConfig } = await mod('config/utils.js');
   // FIN-260 keeps the shared CI managers/rules directly in renovate.json in
   // three libraries. Apply Renovate's real merge semantics to both data layers.
-  const effective = mergeChildConfig(baseline, JSON.parse(readFileSync(resolve(root, 'renovate.json'))));
+  const active = JSON.parse(readFileSync(resolve(root, 'renovate.json')));
+  const effective = mergeChildConfig(baseline, active);
   const { extractPackageFile: extractRegex } = await mod('modules/manager/custom/regex/index.js');
   const { matchRegexOrGlob } = await mod('util/string-match.js');
   const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
+  async function customDependencies(config, file) {
+    const content = readFileSync(resolve(root, file), 'utf8');
+    const result = [];
+    for (const custom of config.customManagers ?? []) {
+      if (!(custom.managerFilePatterns ?? []).some(pattern => matchRegexOrGlob(file, pattern))) continue;
+      for (const dep of (await extractRegex(content, file, custom))?.deps ?? []) {
+        if (dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci')
+          result.push({ ...dep, manager: 'custom.regex', packageFile: file });
+      }
+    }
+    return result;
+  }
+  // A disabled write-controller cannot publish a new base.json preset. New pin
+  // locations must therefore be extracted directly from active renovate.json.
+  const activeInputs = await customDependencies(active, '.github/workflows/renovate-policy-tests.yml');
+  assert.equal(activeInputs.length, 2,
+    'Both source-revision inputs must update from active renovate.json without baseline synchronization');
+  if (manifestPath.endsWith('/.github/renovate-source.json')) {
+    const manifestDeps = await customDependencies(active, '.github/renovate-source.json');
+    assert.equal(manifestDeps.length, 1, 'New specialized manifest manager must be active while disabled');
+    const grouped = await applyPackageRules({ ...manifestDeps[0], packageRules: active.packageRules });
+    assert.equal(grouped.groupSlug, 'finassist-shared-renovate');
+    assert.equal(grouped.pinDigests, true);
+  }
+  const releaseFile = '.github/workflows/release.yml';
+  if (existsSync(resolve(root, releaseFile)) &&
+      readFileSync(resolve(root, releaseFile), 'utf8').includes('fin-assist/go-ci/.github/workflows/shared-release.yml@')) {
+    const releaseInputs = await customDependencies(active, releaseFile);
+    assert.equal(releaseInputs.length, 1, 'Shared release revision input must update without activation');
+  }
   const files = ['.github/workflows/renovate-policy.yml', '.github/workflows/renovate-policy-tests.yml',
-    '.finassist-ci.json', '.github/renovate-source.json'];
+    '.github/workflows/ci.yml', releaseFile, '.finassist-ci.json', '.github/renovate-source.json'];
   const dependencies = [];
   for (const file of files) {
     if (!existsSync(resolve(root, file))) continue;
@@ -75,17 +106,10 @@ if (existsSync(manifestPath)) {
           dependencies.push({ ...dep, manager: 'github-actions', packageFile: file });
       }
     }
-    for (const custom of effective.customManagers ?? []) {
-      if (!(custom.managerFilePatterns ?? []).some(pattern => matchRegexOrGlob(file, pattern))) continue;
-      const result = await extractRegex(content, file, custom);
-      for (const dep of result?.deps ?? []) {
-        if (dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci')
-          dependencies.push({ ...dep, manager: 'custom.regex', packageFile: file });
-      }
-    }
+    dependencies.push(...await customDependencies(effective, file));
   }
   assert.ok(dependencies.some(dep => dep.packageFile === '.github/workflows/renovate-policy.yml'));
-  assert.ok(dependencies.filter(dep => dep.packageFile === '.github/workflows/renovate-policy-tests.yml').length >= 4,
+  assert.equal(dependencies.filter(dep => dep.packageFile === '.github/workflows/renovate-policy-tests.yml').length, 4,
     'Both action refs and both source-revision inputs must be extracted');
   assert.ok(dependencies.some(dep => dep.packageFile.endsWith('.json')), 'The local source manifest pin must be extracted');
   for (const dep of dependencies) {

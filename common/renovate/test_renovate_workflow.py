@@ -71,12 +71,12 @@ class InfraWorkflowContractTests(unittest.TestCase):
         import json
         root = consumer_root()
         baseline = json.loads((root / 'renovate-base.json').read_text())
-        self.assertEqual(set(baseline), {'extends', 'customManagers', 'packageRules'})
-        self.assertEqual(baseline['extends'], ['config:recommended'])
-        # FIN-456 adds only immutable source-pin managers and their single group;
+        self.assertEqual(baseline, {'extends': ['config:recommended']})
+        config = json.loads((root / 'renovate.json').read_text())
+        # FIN-456 adds only active immutable source-pin managers and their single group;
         # it must not replace infra's original recommended dependency policy.
-        self.assertEqual(len(baseline['customManagers']), 2)
-        for manager in baseline['customManagers']:
+        self.assertEqual(len(config['customManagers']), 2)
+        for manager in config['customManagers']:
             self.assertEqual(set(manager) - {'description'}, {
                 'customType', 'managerFilePatterns', 'matchStrings', 'depNameTemplate',
                 'packageNameTemplate', 'datasourceTemplate', 'currentValueTemplate'})
@@ -85,10 +85,10 @@ class InfraWorkflowContractTests(unittest.TestCase):
             self.assertEqual(manager['packageNameTemplate'], 'fin-assist/go-ci')
             self.assertEqual(manager['datasourceTemplate'], 'github-digest')
             self.assertEqual(manager['currentValueTemplate'], 'main')
-        self.assertCountEqual([manager['managerFilePatterns'] for manager in baseline['customManagers']], [
+        self.assertCountEqual([manager['managerFilePatterns'] for manager in config['customManagers']], [
             ['.github/workflows/renovate-policy-tests.yml'], ['/\\.github\\/renovate-source\\.json$/']])
         self.assertEqual([{key: value for key, value in rule.items() if key != 'description'}
-                          for rule in baseline['packageRules']], [{
+                          for rule in config['packageRules']], [{
             'matchPackageNames': ['fin-assist/go-ci', 'fin-assist/go-ci/**'],
             'groupName': 'FinAssist shared Renovate controller',
             'groupSlug': 'finassist-shared-renovate', 'pinDigests': True}])

@@ -36,7 +36,7 @@ def package(service, image, output, environ=os.environ, *, root):
     root = Path(root).resolve(strict=True)
     output = root / output
     image_id = docker("image", "inspect", "--format", "{{.Id}}", image)
-    platform = docker("image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image)
+    platform = docker("image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image_id)
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) or platform != "linux/amd64":
         raise ValueError("expected a linux/amd64 image with a content ID")
     output.mkdir(parents=True, exist_ok=False)

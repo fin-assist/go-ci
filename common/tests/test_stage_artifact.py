@@ -71,6 +71,21 @@ class StageArtifactTest(unittest.TestCase):
                     stage.package("user", "user:ci", Path(tmp) / "out", self.env | {key: value}, root=self.root)
                 self.assertEqual(self.calls, [])
 
+    def test_platform_is_checked_on_captured_id_after_mutable_tag_moves(self):
+        identity = "sha256:" + "b" * 64
+        def moved_tag(*args):
+            if args[:2] == ("image", "inspect") and args[3] == "{{.Os}}/{{.Architecture}}":
+                self.calls.append(args)
+                # The tag moved to an arm64 image after its original ID was read.
+                return "linux/amd64" if args[4] == identity else "linux/arm64"
+            return self.docker(*args)
+        with patch.object(stage, "docker", moved_tag):
+            result = stage.package("user", "user:ci", self.root / "out", self.env, root=self.root)
+        self.assertEqual(result["image_id"], identity)
+        self.assertEqual(result["platform"], "linux/amd64")
+        self.assertIn(("image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", identity), self.calls)
+        self.assertIn(("create", identity), self.calls)
+
     def test_service_cannot_escape_output(self):
         with self.assertRaises(ValueError):
             stage.package("../user", "user:ci", Path("unused"), self.env, root=self.root)

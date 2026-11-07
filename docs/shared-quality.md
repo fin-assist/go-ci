@@ -31,9 +31,9 @@ python3 "$common/scripts/quality.py" --root "$consumer" combined
 ```
 
 `collect` и `check` принимают только `unit`, `integration`, `api`. `test` запускает прежний общий
-Go race/count1 прогон, а не script/release checks; локальный `user.TEST_TIMEOUT` передаётся ему явно.
+Go `-race -count=1` прогон, а не script/release checks; локальный `user.TEST_TIMEOUT` передаётся ему явно.
 Разрешён положительный Go duration, например `8m`, `90s`, `1m30s`, `500ms`; нулевой неограниченный
-таймаут и shell-текст отвергаются. Inventory и collectors всегда сохраняют race и timeout8m.
+таймаут и shell-текст отвергаются. Inventory и collectors всегда сохраняют `-race` и `-timeout=8m`.
 Inventory и collectors ограничены также процессным timeout 45 минут, включая компиляцию:
 это прежний бюджет всего Go CI job, а не timeout одного тестового бинарника.
 `test` использует максимум из 45 минут и своего положительного timeout +120s.
@@ -85,7 +85,7 @@ Local bootstrap получает выбранный полный SHA, прове
 
 - Inventory использует `go test -race -list` и отклоняет нераспределённые Test/Fuzz, включая race-only.
   Service Example запрещён; library Example исполняется в API suite.
-- Collectors используют race/count1/timeout8m и `CI=true`, выполняют `./...` и удаляют stale evidence.
+- Collectors используют `-race -count=1 -timeout=8m` и `CI=true`, выполняют `./...` и удаляют stale evidence.
   Service знаменатель — `./...`, без исключений. Library исключает только точный
   `<module>/internal/pgtest` из instrumentation; вложенные/соседние пакеты остаются, тесты всех пакетов выполняются.
 - JSONL должен содержать реально прошедший Test/Fuzz/Example, не только package pass. Test skip, любой fail,
@@ -94,7 +94,7 @@ Local bootstrap получает выбранный полный SHA, прове
   `fin-assist/go-library-template`: `GITHUB_REPOSITORY` в Actions или один из исходных точных Git origins локально.
   Похожее имя/module path/fork/new library не дают N/A. Mixed applicability не даёт combined.
 - Каждый check использует локальную `.testcoverage.yml` и официальный закреплённый анализатор; своего
-  калькулятора процентов нет. Его согласованное округление1599/2000 проходит80%,1598/2000 не проходит.
+  калькулятора процентов нет. Его согласованное округление: 1599/2000 проходит 80%, 1598/2000 не проходит.
   Combined передаёт три профиля нативному union и не заменяет ни один независимый gate.
 - Compiler inventory/collect сохраняет окружение setup-go и `go.mod`; только анализатор получает
   `GOTOOLCHAIN=auto`. Локальные instrumented profiles/reports и CI artifacts сохраняют прежние имена.

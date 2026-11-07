@@ -10,10 +10,12 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import renovate_policy
+from paths import consumer_root
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE.parents[1]
@@ -164,3 +166,50 @@ class ActionBoundaryTests(unittest.TestCase):
             (root / 'renovate-base.json').symlink_to(root / 'outside')
             with self.assertRaisesRegex(ValueError, 'symlinks'):
                 renovate_policy.read_caller_data(root, 'renovate-base.json')
+
+
+class LocalShimBoundaryTests(unittest.TestCase):
+    @unittest.skipIf(consumer_root() == SOURCE, 'Source host invokes its local reviewed action without a shim')
+    def test_local_shim_rejects_invalid_manifests_before_source_transport(self):
+        # Exercise the actual read-only consumer shim in an isolated copy. Only
+        # canonical JSON validation is real; transport and test dispatch are mocks.
+        shim = (consumer_root() / 'scripts/test_renovate_shared.py').read_bytes()
+        pin = 'a' * 40
+        for go in (False, True):
+            valid = {'revision': pin, **({'profile': 'library'} if go else {})}
+            invalid = [json.dumps(dict(valid, revision=value)) for value in (
+                '../outside-cache', '--upload-pack=untrusted', 'main', 'a' * 12, 'A' * 40,
+                '', None, 123, True)]
+            invalid += [json.dumps(valid).replace('{', '{"revision":"' + pin + '",', 1),
+                        json.dumps(dict(valid, command='untrusted')), '[]']
+            if not go:
+                invalid.append(json.dumps(valid) + ' ' * 4097)
+            for value in [json.dumps(valid), *invalid]:
+                with self.subTest(go=go, manifest=value[:150]), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / 'scripts').mkdir()
+                    (root / '.github').mkdir()
+                    path = root / 'scripts/test_renovate_shared.py'
+                    path.write_bytes(shim)
+                    manifest = root / ('.finassist-ci.json' if go else '.github/renovate-source.json')
+                    manifest.write_text(value)
+                    helper = types.ModuleType('common_ci')
+                    helper.read_config = runner.bootstrap.read_config
+                    helper.unique_object = runner.bootstrap.unique_object
+                    helper.source_dir = Mock(return_value=Path('/canonical/common'))
+                    copied_spec = importlib.util.spec_from_file_location('copied_consumer_shim', path)
+                    copied = importlib.util.module_from_spec(copied_spec)
+                    with patch.dict(sys.modules, {'common_ci': helper}):
+                        copied_spec.loader.exec_module(copied)
+                    case = copied.SharedRenovate('test_pinned_policy_and_consumer_contract')
+                    with patch.object(copied.subprocess, 'run') as dispatch:
+                        if value == json.dumps(valid):
+                            case.test_pinned_policy_and_consumer_contract()
+                            helper.source_dir.assert_called_once()
+                            self.assertEqual(helper.source_dir.call_args.args[1]['revision'], pin)
+                            dispatch.assert_called_once()
+                        else:
+                            with self.assertRaises(ValueError):
+                                case.test_pinned_policy_and_consumer_contract()
+                            helper.source_dir.assert_not_called()
+                            dispatch.assert_not_called()

@@ -66,7 +66,8 @@ def suite(root, common):
                                     elif selected and line.startswith('\t') and line.strip():
                                         recipe.append(line.strip())
                                 self.assertEqual(recipe, [
-                                    '@common=$$(python3 scripts/common_ci.py) && python3 -B '                                    '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
+                                    '@common=$$(python3 scripts/common_ci.py) && python3 -B '
+                                    '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
                     expected_secrets = {} if kind == 'migrations' else {'GO_MODULES_TOKEN': PUSH_TOKEN}
                     self.assertEqual(call.get('secrets', {}), expected_secrets)
 

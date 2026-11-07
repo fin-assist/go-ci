@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sys
 
+# The reviewed source can live in a raw-verified immutable consumer cache.
+sys.dont_write_bytecode = True
 # Isolated execution imports only the sibling modules from this reviewed source.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import re

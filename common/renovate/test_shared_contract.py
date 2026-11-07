@@ -144,9 +144,9 @@ class ActionBoundaryTests(unittest.TestCase):
                                     env=env, cwd=root, capture_output=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
             args = log.read_text().splitlines()
-            self.assertEqual(args[0], '-I')
-            self.assertEqual(Path(args[1]).resolve(), HERE / 'renovate_policy.py')
-            self.assertEqual(args[2:], ['--root', str(root)])
+            self.assertEqual(args[:2], ['-I', '-B'])
+            self.assertEqual(Path(args[2]).resolve(), HERE / 'renovate_policy.py')
+            self.assertEqual(args[3:], ['--root', str(root)])
             self.assertFalse(marker.exists())
 
     def test_enabled_cli_rejects_non_main_events_before_inputs_or_credentials(self):

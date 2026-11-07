@@ -44,7 +44,7 @@ const controller = process.env.RENOVATE_POLICY_SCRIPT;
 const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).parent)); spec=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); import base64; metadata=''.join(m.COMPACT_UPDATE+base64.b64encode(json.dumps(item).encode()).decode()+' -->\\n' for item in json.loads(sys.stdin.read())); print(json.dumps(m.manual_go_update(m.updates(metadata))))";
 const mixed = [{ ...go, newValue: '1.27.3' }, { depName: 'actions/checkout',
   datasource: 'github-tags', newValue: 'v7' }];
-assert.equal(JSON.parse(execFileSync('python3', ['-c', code, controller], {
+assert.equal(JSON.parse(execFileSync('python3', ['-B', '-c', code, controller], {
   input: JSON.stringify(mixed), encoding: 'utf8', timeout: 5000 })), true);
 console.log(source ? 'PASS: source uses-with Go extraction is disabled by baseline and guarded in mixed signed metadata' : 'PASS: real sample uses-with Go extraction and mixed signed metadata remain manual');
 

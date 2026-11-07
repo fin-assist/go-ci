@@ -37,4 +37,4 @@ runs:
           workflow_run|schedule|workflow_dispatch) ;;
           *) echo 'Renovate policy rejects this trigger' >&2; exit 1 ;;
         esac
-        timeout 540s python3 -I "$POLICY_ACTION_PATH/../../../common/renovate/renovate_policy.py" --root "$POLICY_ROOT"
+        timeout 540s python3 -I -B "$POLICY_ACTION_PATH/../../../common/renovate/renovate_policy.py" --root "$POLICY_ROOT"

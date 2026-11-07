@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 SOURCE_ROOT = HERE.parents[1]
 SOURCE = 'fin-assist/go-ci'
@@ -93,6 +94,7 @@ def main():
     root = args.root.resolve()
     contract(root, args.source_revision)
     env = os.environ.copy()
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['RENOVATE_CONSUMER_ROOT'] = str(root)
     env['RENOVATE_POLICY_SCRIPT'] = str(HERE / 'renovate_policy.py')
     env['RENOVATE_POLICY_CONFIG'] = str(root / 'renovate.json')

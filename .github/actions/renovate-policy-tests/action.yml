@@ -28,4 +28,4 @@ runs:
         args=(--root "$POLICY_ROOT" --mode "$POLICY_MODE")
         if [ -n "$POLICY_RUNTIME" ]; then args+=(--runtime "$POLICY_RUNTIME"); fi
         if [ -n "$POLICY_REVISION" ]; then args+=(--source-revision "$POLICY_REVISION"); fi
-        timeout 300s python3 -I "$POLICY_ACTION_PATH/../../../common/renovate/test.py" "${args[@]}"
+        timeout 300s python3 -I -B "$POLICY_ACTION_PATH/../../../common/renovate/test.py" "${args[@]}"

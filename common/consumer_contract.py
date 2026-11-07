@@ -111,7 +111,18 @@ def suite(root, common):
                                     '@common=$$(python3 scripts/common_ci.py) && python3 -B '
                                     '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
                             release = yaml.safe_load((root / '.github/workflows/release.yml').read_text())
+                            events = release.get('on', release.get(True))
+                            self.assertEqual(set(events), {'push', 'workflow_dispatch'})
+                            self.assertEqual(events['push'], {'tags': ['v*']})
+                            manual = events['workflow_dispatch']['inputs']
+                            self.assertEqual(set(manual), {'tag'})
+                            self.assertIs(manual['tag']['required'], True)
+                            self.assertEqual(manual['tag']['type'], 'string')
+                            self.assertEqual(release['permissions'], {'contents': 'write'})
+                            self.assertEqual(set(release['jobs']), {'release'})
                             publisher = release['jobs']['release']
+                            self.assertNotIn('permissions', publisher)
+                            self.assertNotIn('secrets', publisher)
                             self.assertEqual(publisher['uses'], SOURCE + 'shared-release.yml@' + manifest['revision'])
                             self.assertEqual({key: value for key, value in publisher['with'].items()
                                               if key != 'checkout_version'},

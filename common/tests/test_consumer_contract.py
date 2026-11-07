@@ -78,6 +78,8 @@ class ConsumerContractTests(unittest.TestCase):
         if 'module github.com/fin-assist/bank-bff\n' == (self.root / 'go.mod').read_text():
             inputs['checkout_version'] = 'v7'
         (self.root / '.github/workflows/release.yml').write_text(yaml.safe_dump({
+            'on': {'push': {'tags': ['v*']}, 'workflow_dispatch': {
+                'inputs': {'tag': {'required': True, 'type': 'string'}}}},
             'permissions': {'contents': 'write'}, 'jobs': {'release': {
                 'uses': CONTRACT.SOURCE + 'shared-release.yml@' + PIN,
                 'with': inputs}}}))
@@ -145,6 +147,25 @@ runpy.run_path(str(script), run_name='__main__')
                     call['with']['revision'] = 'b' * 40
                 else:
                     call['with']['tag'] = '${{ github.sha }}'
+                path.write_text(yaml.safe_dump(release))
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_rejects_release_trigger_permissions_or_secret_drift(self):
+        for mutation in ('tag-trigger', 'manual-tag-input', 'permissions', 'secrets'):
+            with self.subTest(mutation=mutation):
+                doc = self.fixture()
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                path = self.root / '.github/workflows/release.yml'
+                release = yaml.safe_load(path.read_text())
+                if mutation == 'tag-trigger':
+                    release['on']['push'] = {'branches': ['main']}
+                elif mutation == 'manual-tag-input':
+                    release['on']['workflow_dispatch']['inputs'] = {}
+                elif mutation == 'permissions':
+                    release['permissions']['issues'] = 'write'
+                else:
+                    release['jobs']['release']['secrets'] = 'inherit'
                 path.write_text(yaml.safe_dump(release))
                 self.assertFalse(self.result(doc).wasSuccessful())
 

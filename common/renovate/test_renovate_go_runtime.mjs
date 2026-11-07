@@ -55,6 +55,10 @@ const manifestPath = existsSync(resolve(root, '.finassist-ci.json'))
   ? resolve(root, '.finassist-ci.json') : resolve(root, '.github/renovate-source.json');
 if (existsSync(manifestPath)) {
   const revision = JSON.parse(readFileSync(manifestPath)).revision;
+  const { mergeChildConfig } = await mod('config/utils.js');
+  // FIN-260 keeps the shared CI managers/rules directly in renovate.json in
+  // three libraries. Apply Renovate's real merge semantics to both data layers.
+  const effective = mergeChildConfig(baseline, JSON.parse(readFileSync(resolve(root, 'renovate.json'))));
   const { extractPackageFile: extractRegex } = await mod('modules/manager/custom/regex/index.js');
   const { matchRegexOrGlob } = await mod('util/string-match.js');
   const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
@@ -71,7 +75,7 @@ if (existsSync(manifestPath)) {
           dependencies.push({ ...dep, manager: 'github-actions', packageFile: file });
       }
     }
-    for (const custom of baseline.customManagers ?? []) {
+    for (const custom of effective.customManagers ?? []) {
       if (!(custom.managerFilePatterns ?? []).some(pattern => matchRegexOrGlob(file, pattern))) continue;
       const result = await extractRegex(content, file, custom);
       for (const dep of result?.deps ?? []) {
@@ -89,7 +93,7 @@ if (existsSync(manifestPath)) {
     assert.equal(dep.currentDigest, revision, `${dep.packageFile}: source pin drift`);
     assert.equal(dep.currentValue, 'main', 'Full action SHA annotations must retain the lookup branch');
     assert.equal(dep.datasource, 'github-digest');
-    const configured = await applyPackageRules({ ...dep, packageRules: baseline.packageRules });
+    const configured = await applyPackageRules({ ...dep, packageRules: effective.packageRules });
     assert.notEqual(configured.enabled, false, 'Shared action pins must not be skipped as unversioned refs');
     assert.ok(['finassist-shared-go-ci', 'finassist-shared-renovate'].includes(configured.groupSlug),
       `${dep.depName}: action, manifest and test-input pins must share the reviewed group`);

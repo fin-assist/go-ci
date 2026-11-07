@@ -175,6 +175,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow['env']['SHARED_QUALITY'], '${{ inputs.quality_runner }}')
         checkout = named('shared-go.yml', 'Checkout the pinned quality implementation')
         self.assertEqual(checkout['if'], 'inputs.quality_runner')
+        self.assertEqual(checkout['uses'], 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1')
         self.assertEqual(checkout['with'], {
             'repository': 'fin-assist/go-ci', 'ref': '${{ inputs.revision }}',
             'path': '.finassist-ci/quality-source', 'persist-credentials': False})

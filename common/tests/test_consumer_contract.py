@@ -74,10 +74,13 @@ class ConsumerContractTests(unittest.TestCase):
         self.service_tooling()
 
     def service_tooling(self):
+        inputs = {'revision': PIN, 'tag': '${{ inputs.tag || github.ref_name }}'}
+        if 'module github.com/fin-assist/bank-bff\n' == (self.root / 'go.mod').read_text():
+            inputs['checkout_version'] = 'v7'
         (self.root / '.github/workflows/release.yml').write_text(yaml.safe_dump({
             'permissions': {'contents': 'write'}, 'jobs': {'release': {
                 'uses': CONTRACT.SOURCE + 'shared-release.yml@' + PIN,
-                'with': {'revision': PIN, 'tag': '${{ inputs.tag || github.ref_name }}'}}}}))
+                'with': inputs}}}))
         for name in ('changelog', 'stage_artifact'):
             (self.root / 'scripts' / (name + '.py')).write_text('''from pathlib import Path
 import runpy
@@ -166,6 +169,18 @@ runpy.run_path(str(script), run_name='__main__')
                         text = text.replace('sys.dont_write_bytecode = True', 'sys.dont_write_bytecode = False')
                     path.write_text(text)
                     self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_preserves_checkout_major_and_rejects_unknown_selector(self):
+        for module, version in [('user', 'v7'), ('bank-bff', 'v4'), ('user', 'v5')]:
+            with self.subTest(module=module, version=version):
+                doc = self.fixture('service', 'github.com/fin-assist/' + module)
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                path = self.root / '.github/workflows/release.yml'
+                release = yaml.safe_load(path.read_text())
+                release['jobs']['release']['with']['checkout_version'] = version
+                path.write_text(yaml.safe_dump(release))
+                self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_missing_call_wrong_uses_input_or_profile_fail(self):
         for change in ('missing', 'uses-pin', 'uses-path', 'input-pin', 'go-profile', 'secrets'):

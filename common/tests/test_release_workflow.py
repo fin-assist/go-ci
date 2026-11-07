@@ -113,7 +113,7 @@ class ReleasePublicationTests(unittest.TestCase):
 
 class ReleaseValidationTests(unittest.TestCase):
     def validate_and_publish(self, *, off_main=False, changelog_tag='v0.1.1', tag='v0.1.1', with_module=True,
-                             bad_format=None, missing_main=False):
+                             bad_format=None, missing_main=False, checkout_version="v4"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
 
@@ -164,7 +164,7 @@ class ReleaseValidationTests(unittest.TestCase):
             (root / 'state.json').write_text(json.dumps({'exists': True, 'notes': 'Owner notes'}))
             gh = root / 'gh'
             gh.write_text(FAKE_GH)
-            env = dict(os.environ, TAG=tag, CI_REVISION='a'*40, GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main', GITHUB_WORKSPACE=str(root), GITHUB_SHA=main_sha, FAKE_GITHUB=directory, FAKE_PYTHON=sys.executable, FAKE_GH_SCRIPT=str(gh),
+            env = dict(os.environ, TAG=tag, CI_REVISION='a'*40, CHECKOUT_VERSION=checkout_version, GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main', GITHUB_WORKSPACE=str(root), GITHUB_SHA=main_sha, FAKE_GITHUB=directory, FAKE_PYTHON=sys.executable, FAKE_GH_SCRIPT=str(gh),
                        PATH=directory + os.pathsep + os.environ['PATH'])
             script = (FAKE_GH_COMMAND + workflow_script('Validate release invocation and immutable source') + '\n' + workflow_script('The tag is a release of this service') + '\n'
                       + workflow_script('GitHub release'))
@@ -174,10 +174,12 @@ class ReleaseValidationTests(unittest.TestCase):
             return result, calls.exists(), (root / 'notes.md').read_text() if (root / 'notes.md').exists() else ''
 
     def test_manual_run_uses_tagged_metadata_after_main_has_advanced(self):
-        result, published, notes = self.validate_and_publish()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(published)
-        self.assertIn('Tagged notes.', notes)
+        for version in ('v4', 'v7'):
+            with self.subTest(checkout_version=version):
+                result, published, notes = self.validate_and_publish(checkout_version=version)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(published)
+                self.assertIn('Tagged notes.', notes)
 
     def test_missing_fetched_main_ref_never_reaches_publication(self):
         result, published, _ = self.validate_and_publish(missing_main=True)
@@ -222,8 +224,12 @@ class ReleaseContractTests(unittest.TestCase):
         trigger = workflow.get("on", workflow.get(True))
         self.assertEqual(set(trigger), {"workflow_call"})
         inputs = trigger["workflow_call"]["inputs"]
-        self.assertEqual(set(inputs), {"revision", "tag"})
-        self.assertTrue(all(value["type"] == "string" and value["required"] is True for value in inputs.values()))
+        self.assertEqual(set(inputs), {"revision", "tag", "checkout_version"})
+        self.assertTrue(all(inputs[key]["type"] == "string" and inputs[key]["required"] is True
+                            for key in ("revision", "tag")))
+        self.assertEqual(inputs["checkout_version"], {
+            "description": "Preserve the service release checkout major (v4 or v7)",
+            "required": False, "default": "v4", "type": "string"})
         self.assertNotIn("secrets", trigger["workflow_call"])
         self.assertEqual(workflow["permissions"], {"contents": "write"})
         self.assertEqual(set(workflow["jobs"]), {"release"})
@@ -233,13 +239,21 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", job["if"])
         self.assertIn("github.ref == 'refs/heads/main'", job["if"])
         steps = job["steps"]
+        self.assertEqual(steps[0]["name"], "Validate release invocation and immutable source")
         checkouts = [step for step in steps if step.get("uses", "").startswith("actions/checkout@")]
-        self.assertEqual(len(checkouts), 2)
+        self.assertEqual(len(checkouts), 3)
         for step in checkouts:
             self.assertRegex(step["uses"], r"^actions/checkout@[0-9a-f]{40}$")
             self.assertIs(step["with"]["persist-credentials"], False)
-        self.assertEqual(checkouts[0]["with"]["ref"], "refs/tags/${{ inputs.tag }}")
-        source = checkouts[1]["with"]
+        for version, step, pin in (("v4", checkouts[0], "11d5960a326750d5838078e36cf38b85af677262"),
+                                   ("v7", checkouts[1], "3d3c42e5aac5ba805825da76410c181273ba90b1")):
+            self.assertEqual(step["uses"], "actions/checkout@" + pin)
+            self.assertEqual(step["if"], "inputs.checkout_version == '" + version + "'")
+            self.assertEqual(step["with"]["ref"], "refs/tags/${{ inputs.tag }}")
+            self.assertEqual(step["with"]["fetch-depth"], 0)
+        self.assertNotIn("if", checkouts[2])
+        self.assertEqual(checkouts[2]["uses"], "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+        source = checkouts[2]["with"]
         self.assertEqual(source["repository"], "fin-assist/go-ci")
         self.assertEqual(source["ref"], "${{ inputs.revision }}")
         self.assertEqual(source["path"], ".finassist-ci/source")
@@ -255,18 +269,21 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn('gh release edit', workflow_script("GitHub release"))
 
     def test_release_invocation_rejects_pr_wrong_ref_tag_or_revision(self):
-        valid = {"TAG": "v0.1.1", "CI_REVISION": "a" * 40,
+        valid = {"TAG": "v0.1.1", "CI_REVISION": "a" * 40, "CHECKOUT_VERSION": "v4",
                  "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main"}
         changes = [{}, {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/v0.1.1"},
+                   {"CHECKOUT_VERSION": "v7"},
                    {"GITHUB_EVENT_NAME": "pull_request"}, {"GITHUB_REF": "refs/heads/MAIN"},
                    {"TAG": "v01.1.1"}, {"TAG": "v1.2.3;echo injected"}, {"CI_REVISION": "main"},
                    {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"},
-                   {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/v0.1.2"}]
+                   {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/v0.1.2"},
+                   {"CHECKOUT_VERSION": "v5"}, {"CHECKOUT_VERSION": "V4"},
+                   {"CHECKOUT_VERSION": ""}, {"CHECKOUT_VERSION": "v4;echo injected"}]
         for index, change in enumerate(changes):
             with self.subTest(change=change):
                 result = subprocess.run(["bash", "-euo", "pipefail", "-c", workflow_script("Validate release invocation and immutable source")],
                                         env=os.environ | valid | change, capture_output=True, text=True, timeout=10)
-                self.assertEqual(result.returncode == 0, index < 2, result.stderr)
+                self.assertEqual(result.returncode == 0, index < 3, result.stderr)
 
 
 if __name__ == "__main__":

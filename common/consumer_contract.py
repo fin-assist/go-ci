@@ -112,8 +112,12 @@ def suite(root, common):
                             release = yaml.safe_load((root / '.github/workflows/release.yml').read_text())
                             publisher = release['jobs']['release']
                             self.assertEqual(publisher['uses'], SOURCE + 'shared-release.yml@' + manifest['revision'])
-                            self.assertEqual(publisher['with'], {'revision': manifest['revision'],
-                                                                 'tag': '${{ inputs.tag || github.ref_name }}'})
+                            self.assertEqual({key: value for key, value in publisher['with'].items()
+                                              if key != 'checkout_version'},
+                                             {'revision': manifest['revision'],
+                                              'tag': '${{ inputs.tag || github.ref_name }}'})
+                            self.assertEqual(publisher['with'].get('checkout_version', 'v4'),
+                                             'v7' if module == 'github.com/fin-assist/bank-bff' else 'v4')
                             self.service_delegates()
                     expected_secrets = {} if kind == 'migrations' else {'GO_MODULES_TOKEN': PUSH_TOKEN}
                     self.assertEqual(call.get('secrets', {}), expected_secrets)

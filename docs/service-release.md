@@ -2,7 +2,8 @@
 
 `shared-release.yml` подключается отдельной итерацией после [общего parser](changelog-tooling.md).
 Он содержит только `workflow_call` с обязательными string inputs `revision` (полный source SHA)
-и `tag` (существующий `vX.Y.Z`). Новые secrets, Environment или права не добавляются:
+и `tag` (существующий `vX.Y.Z`); `checkout_version` — необязательный закрытый selector
+`v4|v7` с default `v4`. Новые secrets, Environment или права не добавляются:
 отдельный release job сохраняет `contents: write`, качество PR выполняется другими jobs.
 
 Тонкий caller сохраняет свои `push.tags: ['v*']`, `workflow_dispatch` с input `tag`,
@@ -16,9 +17,11 @@ checkout; Actions equality сама по себе этой гарантии не
 Source checkout имеет фиксированный repository `fin-assist/go-ci` и validated full SHA.
 Читается CHANGELOG из checkout запрошенного тега; исполняемый parser — только из выбранного
 общего источника с явным consumer root. Локальный код тега не исполняется с write token.
-Оба checkout отключают persist-credentials и закреплены на существующий в source полный
-SHA checkout v7. Это сохраняет нынешнюю ревизию BFF; у остальных пяти прежний локальный
-checkout v4 заменяется общим рассмотренным workflow. Версии сервисных образов не меняются.
+Checkout потребителя сохраняет прежний major: BFF явно передаёт `checkout_version: v7`,
+остальные пять используют default `v4`. Значение проверяется case-sensitive до checkout;
+только одна из двух conditional steps использует соответствующий полный immutable SHA.
+Новый checkout общего источника всегда закреплён на v7. Все steps отключают persist-credentials;
+версии сервисных checkout и образов этим переносом не повышаются.
 
 До публикации tag commit должен быть предком origin/main из начального full checkout, формат CHANGELOG должен
 пройти check, а его newest version — совпасть с тегом. Manual run использует metadata тега,

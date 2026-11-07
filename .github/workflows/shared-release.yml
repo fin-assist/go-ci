@@ -11,6 +11,11 @@ on:
         description: Existing owner-created service version tag
         required: true
         type: string
+      checkout_version:
+        description: Preserve the service release checkout major (v4 or v7)
+        required: false
+        default: v4
+        type: string
 
 permissions:
   contents: write
@@ -25,6 +30,7 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       CI_REVISION: ${{ inputs.revision }}
+      CHECKOUT_VERSION: ${{ inputs.checkout_version }}
     steps:
       - name: Validate release invocation and immutable source
         run: |
@@ -36,12 +42,23 @@ jobs:
               raise SystemExit('Tag is not vX.Y.Z')
           if not re.fullmatch(r'[0-9a-f]{40}', revision):
               raise SystemExit('Shared CI revision must be a full commit SHA')
+          if os.environ['CHECKOUT_VERSION'] not in ('v4', 'v7'):
+              raise SystemExit('Unsupported service release checkout version')
           event, ref = os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_REF']
           if not ((event == 'push' and ref == 'refs/tags/' + tag)
                   or (event == 'workflow_dispatch' and ref == 'refs/heads/main')):
               raise SystemExit('Only the matching tag push or manual main invocation may publish')
           PY
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout the service release with v4
+        if: inputs.checkout_version == 'v4'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout the service release with v7
+        if: inputs.checkout_version == 'v7'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0

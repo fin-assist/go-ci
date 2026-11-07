@@ -4,6 +4,8 @@ import json
 import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 
 import yaml
@@ -14,12 +16,52 @@ QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
     'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
 PUSH_TOKEN = "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"
 
+DELEGATE_PROBE = '''
+import runpy, sys, types
+from pathlib import Path
+wrapper, root, shared = map(Path, sys.argv[1:])
+config = {'fixture': 'selected immutable source'}
+def read_config(path):
+    if path != root:
+        raise ValueError('Wrapper did not use its own consumer root')
+    return config
+def source_dir(path, selected):
+    if path != root or selected is not config:
+        raise ValueError('Wrapper bypassed the verified resolver')
+    return shared
+adapter = types.ModuleType('common_ci')
+adapter.read_config, adapter.source_dir = read_config, source_dir
+sys.modules['common_ci'] = adapter
+sys.argv = [str(wrapper), 'probe', 'argument with spaces']
+runpy.run_path(str(wrapper), run_name='__main__')
+'''
+
 
 def suite(root, common):
     """Build consumer-local cases without exposing an auto-discovered global TestCase."""
     root, common = Path(root), Path(common)
 
     class ConsumerContract(unittest.TestCase):
+        def service_delegates(self):
+            # Execute the real thin wrapper, but never resolve/download its source.
+            with tempfile.TemporaryDirectory(prefix='consumer-delegate-') as directory:
+                shared = Path(directory) / 'common'
+                (shared / 'scripts').mkdir(parents=True)
+                for name in ('changelog', 'stage_artifact'):
+                    script = shared / 'scripts' / (name + '.py')
+                    script.write_text("import json, sys\nif __name__ == '__main__':\n"
+                                      "    print(json.dumps({'argv': sys.argv[1:], 'file': __file__, "
+                                      "'bytecode': sys.dont_write_bytecode}))\n")
+                    result = subprocess.run([sys.executable, '-I', '-c', DELEGATE_PROBE,
+                                             str(root.resolve() / 'scripts' / (name + '.py')),
+                                             str(root.resolve()), str(shared)], cwd=directory,
+                                            env={'PATH': os.environ.get('PATH', '')},
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), {
+                        'argv': ['--root', str(root.resolve()), 'probe', 'argument with spaces'],
+                        'file': str(script), 'bytecode': True})
+
         def context(self):
             manifest = json.loads((root / '.finassist-ci.json').read_text())
             self.assertRegex(manifest['revision'], r'^[0-9a-f]{40}$')
@@ -67,6 +109,12 @@ def suite(root, common):
                                         recipe.append(line.strip())
                                 self.assertEqual(recipe, [
                                     '@common=$$(python3 scripts/common_ci.py) && python3 -B '                                    '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
+                            release = yaml.safe_load((root / '.github/workflows/release.yml').read_text())
+                            publisher = release['jobs']['release']
+                            self.assertEqual(publisher['uses'], SOURCE + 'shared-release.yml@' + manifest['revision'])
+                            self.assertEqual(publisher['with'], {'revision': manifest['revision'],
+                                                                 'tag': '${{ inputs.tag || github.ref_name }}'})
+                            self.service_delegates()
                     expected_secrets = {} if kind == 'migrations' else {'GO_MODULES_TOKEN': PUSH_TOKEN}
                     self.assertEqual(call.get('secrets', {}), expected_secrets)
 

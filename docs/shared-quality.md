@@ -95,3 +95,17 @@ Local bootstrap получает выбранный полный SHA, прове
   Combined передаёт три профиля нативному union и не заменяет ни один независимый gate.
 - Compiler inventory/collect сохраняет окружение setup-go и `go.mod`; только анализатор получает
   `GOTOOLCHAIN=auto`. Локальные instrumented profiles/reports и CI artifacts сохраняют прежние имена.
+
+## CHANGELOG и thin delegates после миграции (FIN-457)
+
+При `quality_runner: true` `shared-go.yml` проверяет CHANGELOG parser из того же
+`.finassist-ci/quality-source`, передавая явный consumer root. При false сохраняется
+`python3 scripts/changelog.py check`: существующие сервисные и библиотечные callers не
+переводятся неявно. Оба пути передают ненулевой exit как failure.
+
+Для шести явно подключённых сервисов общий consumer contract дополнительно связывает
+release caller `uses`/`revision` с manifest и проверяет поведение локальных changelog/artifact
+wrappers. Изолированный subprocess исполняет настоящий wrapper с fake resolver и shared
+probe, из чужого cwd: проверяются явный consumer root, передача аргументов без потерь,
+правильный shared script и отключённый bytecode. Настоящий bootstrap, network и новые
+инструменты этим probe не запускаются. Legacy false и библиотечные fixtures сохраняются.

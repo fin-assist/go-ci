@@ -97,7 +97,12 @@ jobs:
           GOTOOLCHAIN: auto
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: CHANGELOG.md format
-        run: python3 scripts/changelog.py check
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 .finassist-ci/quality-source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
+          else
+            python3 scripts/changelog.py check
+          fi
       - name: Collect unit statements coverage
         id: collect_unit
         continue-on-error: true

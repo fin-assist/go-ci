@@ -112,16 +112,29 @@ if (existsSync(manifestPath)) {
   assert.equal(dependencies.filter(dep => dep.packageFile === '.github/workflows/renovate-policy-tests.yml').length, 4,
     'Both action refs and both source-revision inputs must be extracted');
   assert.ok(dependencies.some(dep => dep.packageFile.endsWith('.json')), 'The local source manifest pin must be extracted');
-  for (const dep of dependencies) {
-    normalizeDepNames(dep);
-    assert.equal(dep.currentDigest, revision, `${dep.packageFile}: source pin drift`);
-    assert.equal(dep.currentValue, 'main', 'Full action SHA annotations must retain the lookup branch');
-    assert.equal(dep.datasource, 'github-digest');
-    const configured = await applyPackageRules({ ...dep, packageRules: effective.packageRules });
-    assert.notEqual(configured.enabled, false, 'Shared action pins must not be skipped as unversioned refs');
-    assert.ok(['finassist-shared-go-ci', 'finassist-shared-renovate'].includes(configured.groupSlug),
-      `${dep.depName}: action, manifest and test-input pins must share the reviewed group`);
-    assert.equal(configured.pinDigests, true);
+  async function verifySourcePinGroup(packageRules) {
+    const slugs = new Set();
+    for (const dep of dependencies) {
+      normalizeDepNames(dep);
+      assert.equal(dep.currentDigest, revision, `${dep.packageFile}: source pin drift`);
+      assert.equal(dep.currentValue, 'main', 'Full action SHA annotations must retain the lookup branch');
+      assert.equal(dep.datasource, 'github-digest');
+      const configured = await applyPackageRules({ ...dep, packageRules });
+      assert.notEqual(configured.enabled, false, 'Shared action pins must not be skipped as unversioned refs');
+      assert.ok(['finassist-shared-go-ci', 'finassist-shared-renovate'].includes(configured.groupSlug),
+        `${dep.depName}: action, manifest and test-input pins must share the reviewed group`);
+      assert.equal(configured.pinDigests, true);
+      slugs.add(configured.groupSlug);
+    }
+    assert.equal(slugs.size, 1, `source pins split across groups: ${[...slugs]}`);
+    return [...slugs][0];
   }
+  const group = await verifySourcePinGroup(effective.packageRules);
+  // Both slugs are individually valid: only a cross-pin check detects this split.
+  const splitActions = { matchManagers: ['github-actions'],
+    matchPackageNames: ['fin-assist/go-ci', 'fin-assist/go-ci/**'],
+    groupSlug: group === 'finassist-shared-go-ci' ? 'finassist-shared-renovate' : 'finassist-shared-go-ci' };
+  await assert.rejects(() => verifySourcePinGroup([...effective.packageRules, splitActions]),
+    /source pins split across groups/, 'A real package-rule mutation must fail when action pins split');
   console.log(`PASS: actual regex/actions extraction keeps ${dependencies.length} immutable source pins grouped`);
 }

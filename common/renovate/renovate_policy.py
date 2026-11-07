@@ -589,7 +589,7 @@ def explain_spent_retry(api, config, number, key, receipt, body):
     api.write_receipts(latest, latest_sha)
 
 
-def reconcile(api, config, trigger=None, mutate_prs=True):
+def reconcile(api, config, trigger=None):
     if api.identity() != config['controllerLogin']:
         raise ValueError('Mutation credential identity differs from controllerLogin; no retry claim is allowed')
     api.controller_login = config['controllerLogin']
@@ -604,9 +604,6 @@ def reconcile(api, config, trigger=None, mutate_prs=True):
         policy['baseBranchPatterns'] = [base]
         api.write_policy(policy, policy_sha)
         policy, policy_sha = api.read_policy()
-    if not mutate_prs:
-        print('Renovate PR mutations disabled; configuration synchronized')
-        return
     failures = []
     for candidate in api.pages('pulls?state=open'):
         try:

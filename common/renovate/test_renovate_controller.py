@@ -871,23 +871,6 @@ class MergeabilityBoundaryTests(unittest.TestCase):
             reconcile(api,api.config)
             self.assertEqual(api.actions,[])
 
-if __name__ == '__main__':
-    unittest.main()
-
-
-class ConfigurationOnlyTests(unittest.TestCase):
-    def test_disabled_pr_mutations_still_sync_baseline_and_single_target(self):
-        class ConfigFake(Fake):
-            def sync_baseline(self,base):self.synced=base
-            def pages(self,*args,**kwargs):raise AssertionError('PRs must not be evaluated in sync-only mode')
-        api=ConfigFake();api.target='release/0.2.12'
-        reconcile(api,api.config,mutate_prs=False)
-        self.assertEqual(api.synced,'release/0.2.12')
-        self.assertEqual(api.policy['baseBranchPatterns'],['release/0.2.12'])
-        self.assertEqual([action[0] for action in api.actions],['policy'])
-
-
-
 class StageWorkflowTests(unittest.TestCase):
     """The infra checks belong to stage.yml, never to the deployment workflow."""
     def stage_api(self):
@@ -927,3 +910,7 @@ class StageWorkflowTests(unittest.TestCase):
                     api.runs['stage.yml']['conclusion'] = state
                 reconcile(api, api.config)
                 self.assertEqual(api.actions, [])
+
+
+if __name__ == '__main__':
+    unittest.main()

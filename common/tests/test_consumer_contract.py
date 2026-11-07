@@ -151,7 +151,10 @@ runpy.run_path(str(script), run_name='__main__')
                 self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_quality_optin_rejects_release_trigger_permissions_or_secret_drift(self):
-        for mutation in ('tag-trigger', 'manual-tag-input', 'permissions', 'secrets'):
+        for mutation in ('tag-trigger', 'manual-tag-input', 'permissions', 'secrets',
+                         'extra-workflow-run', 'extra-pull-request-target',
+                         'optional-tag', 'string-required', 'boolean-tag',
+                         'extra-job', 'job-permissions'):
             with self.subTest(mutation=mutation):
                 doc = self.fixture()
                 doc['jobs']['go-check']['with']['quality_runner'] = True
@@ -164,8 +167,22 @@ runpy.run_path(str(script), run_name='__main__')
                     release['on']['workflow_dispatch']['inputs'] = {}
                 elif mutation == 'permissions':
                     release['permissions']['issues'] = 'write'
-                else:
+                elif mutation == 'secrets':
                     release['jobs']['release']['secrets'] = 'inherit'
+                elif mutation == 'extra-workflow-run':
+                    release['on']['workflow_run'] = {'workflows': ['CI'], 'types': ['completed']}
+                elif mutation == 'extra-pull-request-target':
+                    release['on']['pull_request_target'] = {}
+                elif mutation == 'optional-tag':
+                    release['on']['workflow_dispatch']['inputs']['tag']['required'] = False
+                elif mutation == 'string-required':
+                    release['on']['workflow_dispatch']['inputs']['tag']['required'] = 'true'
+                elif mutation == 'boolean-tag':
+                    release['on']['workflow_dispatch']['inputs']['tag']['type'] = 'boolean'
+                elif mutation == 'extra-job':
+                    release['jobs']['extra'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}
+                else:
+                    release['jobs']['release']['permissions'] = {'contents': 'read'}
                 path.write_text(yaml.safe_dump(release))
                 self.assertFalse(self.result(doc).wasSuccessful())
 

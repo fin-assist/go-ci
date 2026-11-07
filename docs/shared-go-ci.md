@@ -99,7 +99,7 @@ Coverage guards и относящиеся к ним проверочные ск�
 
 Обычный PR/fork CI имеет `contents: read`, checkout без сохранения credentials и не получает write-доступа. Передача `GO_MODULES_TOKEN` явная, без `secrets: inherit`; общий Go/API CI использует его только на доверенном `push`, а не при выполнении PR-кода. У образов остаётся передача токена через BuildKit netrc secret вместо build args или логов. Отсутствие доступа к приватному модулю не является основанием выдать секрет недоверенному PR или признать невыполненный gate успешным.
 
-Claude и workflows выпуска библиотек остаются локальными намеренно. FIN-457 переносит
+Claude, workflow контроллера Renovate и workflows выпуска библиотек остаются локальными намеренно. FIN-457 переносит
 публикацию **сервисных** GitHub Release в [общий `shared-release.yml`](service-release.md):
 отдельный job сохраняет `contents: write`, исполняет только закреплённый общий parser и
 не исполняет PR-код. Локальные callers сохраняют свои triggers и inputs без передачи secrets.

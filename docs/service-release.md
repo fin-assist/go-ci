@@ -7,7 +7,8 @@
 отдельный release job сохраняет `contents: write`, качество PR выполняется другими jobs.
 
 Тонкий caller сохраняет свои `push.tags: ['v*']`, `workflow_dispatch` с input `tag`,
-manual-only-main condition и прежнее имя release job. Его `uses` и `with.revision` выбирают
+manual-only-main condition и прежнее имя release job. Caller сохраняет только
+`permissions: {contents: write}` и не передаёт `secrets` общему workflow. Его `uses` и `with.revision` выбирают
 один reviewed полный SHA вместе с локальным manifest. `with.tag` передаёт
 `${{ inputs.tag || github.ref_name }}` как данные; source проверяет точный event/ref:
 только matching tag push либо manual `refs/heads/main`. PR, workflow_run, другой manual ref

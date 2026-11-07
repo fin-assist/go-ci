@@ -18,6 +18,8 @@ SPEC = importlib.util.spec_from_file_location("image_smoke", SCRIPT)
 IMAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(IMAGE)
 SHA = "a" * 40
+IMAGE_ID = "sha256:" + "b" * 64
+FAKE_ID = "sha256:" + "c" * 64
 
 
 class Runner:
@@ -30,6 +32,8 @@ class Runner:
 
     def __call__(self, arguments, **options):
         self.calls.append((arguments, options))
+        if arguments[:3] == ["docker", "image", "inspect"]:
+            return FAKE_ID if arguments[-1] == "fake-llm:ci" else IMAGE_ID
         if arguments[-1] == "help":
             return "usage: service serve"
         if arguments[-1] == "-h":
@@ -60,10 +64,10 @@ class ImageSmokeTests(unittest.TestCase):
                 with mock.patch("sys.argv", ["image_smoke.py", "--service", service, "--fake-llm", fake]), \
                         mock.patch.dict(os.environ, {"GITHUB_SHA": SHA, "CI_REVISION": "b" * 40,
                                                      "GITHUB_OUTPUT": str(output)}), \
-                        mock.patch.object(IMAGE, "build_images", return_value=image) as build:
+                        mock.patch.object(IMAGE, "build_images", side_effect=lambda *a, **kw: (kw["image_ids"].update(image_id=IMAGE_ID) or image)) as build:
                     IMAGE.main()
-                build.assert_called_once_with(service, fake == "true", SHA)
-                self.assertEqual(output.read_text(), "image_tag=" + image + "\n")
+                build.assert_called_once_with(service, fake == "true", SHA, image_ids={"image_id": IMAGE_ID})
+                self.assertEqual(output.read_text(), "image_tag=" + image + "\nimage_id=" + IMAGE_ID + "\n")
 
     def test_primary_profiles_build_tested_tags_with_source_revision(self):
         for service in sorted(IMAGE.SERVICES):
@@ -75,7 +79,7 @@ class ImageSmokeTests(unittest.TestCase):
                 self.assertEqual(build[0], ["docker", "build", "--build-arg", "VERSION=" + SHA,
                                              "-t", image, "."])
                 self.assertEqual(build[1]["timeout"], 600)
-                self.assertIn((["docker", "run", "--rm", image, "help"], {"expected": 2}), run.calls)
+                self.assertIn((["docker", "run", "--rm", IMAGE_ID, "help"], {"expected": 2}), run.calls)
 
     def test_bad_profile_fake_or_revision_never_starts_docker(self):
         cases = [("service; echo x", False, SHA), ("assistant", True, "main"),
@@ -86,6 +90,35 @@ class ImageSmokeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     IMAGE.build_images(service, fake, sha, environ={}, run=run)
                 self.assertFalse(run.calls)
+
+    def test_smoke_and_outputs_share_captured_ids_even_when_tags_move(self):
+        run = Runner()
+        ids = {}
+        image = IMAGE.build_images("assistant", True, SHA, environ={}, run=run, image_ids=ids)
+        self.assertEqual(image, "assistant:ci")
+        self.assertEqual(ids, {"image_id": IMAGE_ID, "fake_image_id": FAKE_ID})
+        smokes = [args for args, _ in run.calls if args[:3] == ["docker", "run", "--rm"]]
+        self.assertEqual([args[3] for args in smokes], [ids["image_id"], ids["fake_image_id"]])
+        for tag, identity in (("assistant:ci", IMAGE_ID), ("fake-llm:ci", FAKE_ID)):
+            inspected = next(i for i, (args, _) in enumerate(run.calls)
+                             if args == ["docker", "image", "inspect", "--format", "{{.Id}}", tag])
+            tested = next(i for i, (args, _) in enumerate(run.calls) if args in smokes and args[3] == identity)
+            self.assertLess(inspected, tested)
+
+    def test_invalid_image_identity_or_failed_fake_smoke_cannot_publish_ids(self):
+        for failure in ("identity", "fake-smoke"):
+            with self.subTest(failure=failure):
+                runner = Runner()
+                ids = {}
+                def run(arguments, **options):
+                    if failure == "identity" and arguments[:3] == ["docker", "image", "inspect"]:
+                        return "mutable:tag"
+                    if failure == "fake-smoke" and arguments[-1] == "-h":
+                        return "invalid output"
+                    return runner(arguments, **options)
+                with self.assertRaises((ValueError, RuntimeError)):
+                    IMAGE.build_images("assistant", True, SHA, environ={}, run=run, image_ids=ids)
+                self.assertEqual(ids, {})
 
     def test_optional_token_is_a_private_file_and_always_removed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -102,7 +135,7 @@ class ImageSmokeTests(unittest.TestCase):
                         self.assertNotIn("sample-token", str(arguments))
                         if failure:
                             raise RuntimeError("build failed")
-                    return "usage:"
+                    return IMAGE_ID if arguments[:3] == ["docker", "image", "inspect"] else "usage:"
 
                 environment = {"GO_MODULES_TOKEN": "sample-token", "RUNNER_TEMP": directory}
                 if failure:
@@ -115,7 +148,7 @@ class ImageSmokeTests(unittest.TestCase):
 
     def test_missing_help_output_fails_before_artifact_can_be_created(self):
         def run(arguments, **options):
-            return "unrelated output"
+            return IMAGE_ID if arguments[:3] == ["docker", "image", "inspect"] else "unrelated output"
 
         with self.assertRaisesRegex(RuntimeError, "usage:"):
             IMAGE.build_images("service", False, SHA, environ={}, run=run)
@@ -128,12 +161,12 @@ class ImageSmokeTests(unittest.TestCase):
                 fake_builds = [args for args, _ in run.calls if "Dockerfile.fake-llm" in args]
                 self.assertEqual(len(fake_builds), int(enabled))
                 if enabled:
-                    self.assertIn((["docker", "run", "--rm", "fake-llm:ci", "-h"], {}), run.calls)
+                    self.assertIn((["docker", "run", "--rm", FAKE_ID, "-h"], {}), run.calls)
 
     def test_bff_production_refusal_and_listener_shutdown_checks(self):
         run = Runner()
         IMAGE.build_images("bank-bff", False, SHA, environ={}, run=run)
-        self.assertIn((["docker", "run", "--rm", "bank-bff:ci", "serve"], {"expected": 1}), run.calls)
+        self.assertIn((["docker", "run", "--rm", IMAGE_ID, "serve"], {"expected": 1}), run.calls)
         public = [args[-1] for args, _ in run.calls if args[0] == "curl" and "%{http_code}" in args]
         self.assertEqual(public, ["http://127.0.0.1:18080" + path
                                   for path in ["/metrics", "/healthz", "/readyz", "/v1/profile"]])
@@ -226,7 +259,11 @@ class ImageWorkflowTests(unittest.TestCase):
     def test_tested_images_keep_stage_provenance_and_fake_provider_artifact(self):
         steps = self.workflow()["jobs"]["image"]["steps"]
         extract = next(step for step in steps if step.get("name") == "Extract stage binary from the tested image")
-        self.assertEqual(extract["run"], 'python3 scripts/stage_artifact.py "$SERVICE" "$IMAGE_TAG" stage-artifact')
+        self.assertEqual(extract["run"], 'python3 .finassist-ci/source/common/scripts/stage_artifact.py --root "$GITHUB_WORKSPACE" "$SERVICE" "$IMAGE_ID" stage-artifact')
+        self.assertEqual(extract["env"], {"IMAGE_ID": "${{ steps.image.outputs.image_id }}"})
+        fake = next(step for step in steps if step.get("name") == "Extract stage fake provider from its tested image")
+        self.assertEqual(fake["env"], {"IMAGE_ID": "${{ steps.image.outputs.fake_image_id }}"})
+        self.assertIn('--root "$GITHUB_WORKSPACE" fake-llm "$IMAGE_ID"', fake["run"])
         uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
         self.assertEqual(len(uploads), 2)
         for step in uploads:

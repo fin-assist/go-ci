@@ -59,7 +59,15 @@ def bff_smoke(image, revision, run=command):
         run(["docker", "rm", "-f", container])
 
 
-def build_images(service, fake_llm, revision, *, environ=os.environ, run=command):
+def content_id(image, run):
+    """Capture immutable image identity before smoke and later extraction."""
+    identity = run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", identity):
+        raise ValueError("expected an image content ID")
+    return identity
+
+
+def build_images(service, fake_llm, revision, *, environ=os.environ, run=command, image_ids=None):
     """Return the tested primary image tag; stage packaging uses that exact image."""
     if service not in SERVICES:
         raise ValueError("unsupported service image profile")
@@ -84,13 +92,19 @@ def build_images(service, fake_llm, revision, *, environ=os.environ, run=command
     finally:
         if secret_path is not None:
             secret_path.unlink()
-    require_text(run(["docker", "run", "--rm", image, "help"], expected=2), "usage:")
+    primary_id = content_id(image, run)
+    require_text(run(["docker", "run", "--rm", primary_id, "help"], expected=2), "usage:")
     if service == "bank-bff":
-        bff_smoke(image, revision, run)
+        bff_smoke(primary_id, revision, run)
     if fake_llm:
         run(["docker", "build", "-f", "Dockerfile.fake-llm", "-t", "fake-llm:ci", "."],
             timeout=600, capture=False)
-        require_text(run(["docker", "run", "--rm", "fake-llm:ci", "-h"]), "loopback listen address")
+        fake_id = content_id("fake-llm:ci", run)
+        require_text(run(["docker", "run", "--rm", fake_id, "-h"]), "loopback listen address")
+    if image_ids is not None:
+        image_ids["image_id"] = primary_id
+        if fake_llm:
+            image_ids["fake_image_id"] = fake_id
     return image
 
 
@@ -99,9 +113,12 @@ def main():
     parser.add_argument("--service", required=True, choices=sorted(SERVICES))
     parser.add_argument("--fake-llm", choices=["true", "false"], default="false")
     args = parser.parse_args()
-    image = build_images(args.service, args.fake_llm == "true", os.environ["GITHUB_SHA"])
+    image_ids = {}
+    image = build_images(args.service, args.fake_llm == "true", os.environ["GITHUB_SHA"], image_ids=image_ids)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("image_tag=" + image + "\n")
+        for key, value in image_ids.items():
+            output.write(key + "=" + value + "\n")
 
 
 if __name__ == "__main__":

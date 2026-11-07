@@ -1,4 +1,4 @@
-"""Tests of scripts/changelog.py: python3 -m unittest discover -s scripts -p 'test_*.py'."""
+"""Tests of common/scripts/changelog.py, run by make test."""
 
 import importlib.util
 import sys
@@ -142,6 +142,8 @@ class MainTest(unittest.TestCase):
             (Path(unrelated) / "CHANGELOG.md").write_text("invalid cwd changelog")
             script = Path(__file__).resolve().parents[1] / "scripts/changelog.py"
             for args, code, output in [( ["latest"], 2, ""),
+                                       (["--root", "", "latest"], 2, ""),
+                                       (["--root", ".", "latest"], 2, ""),
                                        (["--root", str(self.root), "latest"], 0, "v0.2.0\n"),
                                        (["--root", str(self.root), "notes", "v0.1.1"], 0, "- Исправлено.\n"),
                                        (["--root", str(self.root), "check"], 0, "")]:

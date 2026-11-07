@@ -108,7 +108,8 @@ def suite(root, common):
                                     elif selected and line.startswith('\t') and line.strip():
                                         recipe.append(line.strip())
                                 self.assertEqual(recipe, [
-                                    '@common=$$(python3 scripts/common_ci.py) && python3 -B '                                    '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
+                                    '@common=$$(python3 scripts/common_ci.py) && python3 -B '
+                                    '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
                             release = yaml.safe_load((root / '.github/workflows/release.yml').read_text())
                             publisher = release['jobs']['release']
                             self.assertEqual(publisher['uses'], SOURCE + 'shared-release.yml@' + manifest['revision'])

@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bootstrap import read_config, unique_object
 
 ANALYZER = 'github.com/vladopajic/go-test-coverage/v2@v2.20.1'
+# Match the existing shared Go job budget; Go's -timeout applies per test binary.
+GO_PROCESS_TIMEOUT = 45 * 60
 LEVELS = ('unit', 'integration', 'api')
 BLOCK = re.compile(r'\S+:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+\s+([0-9]+)\s+[0-9]+')
 ORIGINAL_TEMPLATE = 'fin-assist/go-library-template'
@@ -100,7 +102,7 @@ def test_names(root, profile):
     """Reject race-only or ordinary tests which all three collectors would omit."""
     output = root / 'test-names.txt'
     run(root, ['go', 'test', '-race', '-list', '^(Test|Fuzz|Example)', '-timeout=8m', './...'],
-        output=output)
+        output=output, timeout=GO_PROCESS_TIMEOUT)
     names = output.read_text().splitlines()
     invalid = [name for name in names if re.match(r'^(Test|Fuzz)', name)
                and not re.match(r'^(Test|Fuzz)(Unit|Integration|API).+', name)]
@@ -176,7 +178,7 @@ def collect(root, profile, level):
         selector = '^((Test|Fuzz)API|Example)' if profile == 'library' else '^(Test|Fuzz)API'
     run(root, ['go', 'test', '-json', '-race', '-count=1', '-timeout=8m', '-coverpkg=' + denominator,
                '-coverprofile=' + level + '.out', '-run', selector, './...'],
-        output=root / (level + '.jsonl'), env={**os.environ, 'CI': 'true'})
+        output=root / (level + '.jsonl'), env={**os.environ, 'CI': 'true'}, timeout=GO_PROCESS_TIMEOUT)
     validate(root, profile, level)
 
 
@@ -238,7 +240,7 @@ def main(argv=None):
         elif args.command == 'test':
             test_names(root, profile)
             run(root, ['go', 'test', '-race', '-count=1', '-timeout=' + args.test_timeout, './...'],
-                timeout=seconds + 120)
+                timeout=max(GO_PROCESS_TIMEOUT, seconds + 120))
         elif args.command == 'collect':
             collect(root, profile, args.level)
         elif args.command == 'check':

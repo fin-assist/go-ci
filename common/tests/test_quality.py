@@ -5,9 +5,11 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -155,6 +157,7 @@ class QualityCommandsTests(QualityFixture):
                         self.assertIn(flag, self.command)
                     self.assertEqual(self.command[-1], './...')
                     self.assertEqual(self.kwargs['env']['CI'], 'true')
+                    self.assertEqual(self.kwargs['timeout'], 45 * 60)
                     expected = './...' if profile == 'service' else 'example.com/quality,example.com/quality/nested/internal/pgtest'
                     self.assertIn('-coverpkg=' + expected, self.command)
                     selector = self.command[self.command.index('-run') + 1]
@@ -200,7 +203,53 @@ class QualityCommandsTests(QualityFixture):
         with patch.object(QUALITY, 'test_names'), patch.object(QUALITY, 'run') as invoke:
             self.assertEqual(QUALITY.main(['--root', str(self.root), 'test', '--test-timeout', '1m30s']), 0)
             self.assertIn('-timeout=1m30s', invoke.call_args.args[1])
-            self.assertEqual(invoke.call_args.kwargs['timeout'], 210)
+            self.assertEqual(invoke.call_args.kwargs['timeout'], 45 * 60)
+        with patch.object(QUALITY, 'test_names'), patch.object(QUALITY, 'run') as invoke:
+            self.assertEqual(QUALITY.main(['--root', str(self.root), 'test', '--test-timeout', '1h']), 0)
+            self.assertEqual(invoke.call_args.kwargs['timeout'], 3600 + 120)
+
+    def test_inventory_allows_the_existing_job_budget_including_race_compilation(self):
+        def invoke(root, command, **kwargs):
+            kwargs['output'].write_text('TestUnitRule\n')
+        with patch.object(QUALITY, 'run', side_effect=invoke) as process:
+            QUALITY.test_names(self.root, 'service')
+        self.assertEqual(process.call_args.kwargs['timeout'], 45 * 60)
+
+    def test_sigterm_cancellation_terminates_descendant_which_ignores_term(self):
+        lock, group = self.root / 'cancel.lock', self.root / 'group.pid'
+        child = ('import fcntl,signal,time,sys;f=open(sys.argv[1],"w");'
+                 'fcntl.flock(f,fcntl.LOCK_EX);signal.signal(signal.SIGTERM,signal.SIG_IGN);'
+                 'f.write("locked");f.flush();time.sleep(60)')
+        parent = ('import subprocess,sys,time,os;open(sys.argv[3],"w").write(str(os.getpid()));'
+                  'subprocess.Popen([sys.executable,"-c",sys.argv[1],sys.argv[2]]);time.sleep(60)')
+        launcher = ('import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);import quality;'
+                    'quality.run(Path(sys.argv[2]),[sys.executable,"-c",*sys.argv[3:]],timeout=30)')
+        runner = subprocess.Popen([sys.executable, '-B', '-c', launcher,
+                                   str(Path(QUALITY.__file__).parent), str(self.root),
+                                   parent, child, str(lock), str(group)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  start_new_session=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not lock.exists() or lock.read_text() != 'locked':
+                if runner.poll() is not None or time.monotonic() >= deadline:
+                    self.fail('Runner did not start the lock-holding descendant.')
+                time.sleep(0.02)
+            runner.send_signal(signal.SIGTERM)
+            self.assertNotEqual(runner.wait(timeout=10), 0)
+            # The descendant ignores TERM: only runner cleanup can release this lock.
+            subprocess.run([sys.executable, '-c',
+                            'import fcntl,sys;f=open(sys.argv[1]);fcntl.flock(f,fcntl.LOCK_EX)', str(lock)],
+                           check=True, timeout=5)
+        finally:
+            if group.exists():
+                try:
+                    os.killpg(int(group.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if runner.poll() is None:
+                runner.kill()
+            runner.wait(timeout=5)
 
     def test_process_timeout_terminates_descendant_which_ignores_term(self):
         lock = self.root / 'child.lock'

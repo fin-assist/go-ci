@@ -158,11 +158,55 @@ class SharedGoWorkflowTests(unittest.TestCase):
         indexed = {step['id']: step for step in steps('shared-go.yml') if 'id' in step}
         for suite in ['unit', 'integration', 'api']:
             collect, check = indexed['collect_'+suite], indexed['check_'+suite]
-            self.assertEqual(collect['run'], 'make collect-'+suite)
+            self.assertIn('make collect-'+suite, collect['run'])
+            self.assertIn('--root "$GITHUB_WORKSPACE" collect '+suite, collect['run'])
             self.assertIs(collect['continue-on-error'], True)
-            self.assertEqual(check['run'], 'make check-'+suite)
+            self.assertIn('make check-'+suite, check['run'])
+            self.assertIn('--root "$GITHUB_WORKSPACE" check '+suite, check['run'])
             self.assertIs(check['continue-on-error'], True)
             self.assertEqual(check['if'], f"always() && steps.collect_{suite}.outcome == 'success'")
+
+    def test_quality_runner_is_explicit_and_legacy_profiles_do_not_migrate_implicitly(self):
+        workflow = document('shared-go.yml')
+        call = workflow.get('on', workflow.get(True))['workflow_call']
+        self.assertEqual(call['inputs']['quality_runner'], {
+            'description': 'Explicitly use the shared test/coverage runner (FIN-457 service migration)',
+            'required': False, 'default': False, 'type': 'boolean'})
+        self.assertEqual(workflow['env']['SHARED_QUALITY'], '${{ inputs.quality_runner }}')
+        checkout = named('shared-go.yml', 'Checkout the pinned quality implementation')
+        self.assertEqual(checkout['if'], 'inputs.quality_runner')
+        self.assertEqual(checkout['with'], {
+            'repository': 'fin-assist/go-ci', 'ref': '${{ inputs.revision }}',
+            'path': '.finassist-ci/quality-source', 'persist-credentials': False})
+        self.assertLess(steps('shared-go.yml').index(checkout),
+                        steps('shared-go.yml').index(named('shared-go.yml', 'Access to private modules')))
+
+    def test_quality_and_legacy_branches_execute_only_the_selected_runner_and_propagate_failure(self):
+        routes = [('All tests belong to a suite', ['test-names'], ['test-names']),
+                  ('Combined statements coverage (informational union)', ['combined'], ['cover-combined'])]
+        for level in ['unit', 'integration', 'api']:
+            routes += [(f'Collect {level} statements coverage', ['collect', level], ['collect-' + level]),
+                       (f'Require 80 percent {level} statements coverage', ['check', level], ['check-' + level])]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for command in ['python3', 'make']:
+                path = root / command
+                path.write_text('#!/bin/sh\nprintf "%s\\n" "' + command + '" "$@"\nexit "${FIXTURE_EXIT:-0}"\n')
+                path.chmod(0o755)
+            for profile in ['service', 'library']:
+                for title, shared_args, legacy_args in routes:
+                    for optin in ['true', 'false']:
+                        for status in ['0', '7']:
+                            with self.subTest(profile=profile, step=title, optin=optin, status=status):
+                                result = run(named('shared-go.yml', title)['run'],
+                                             PATH=str(root) + os.pathsep + os.environ['PATH'],
+                                             SHARED_QUALITY=optin, SHARED_PROFILE=profile,
+                                             GITHUB_WORKSPACE=str(root / 'consumer with spaces'), FIXTURE_EXIT=status)
+                                expected = (['python3', '.finassist-ci/quality-source/common/scripts/quality.py',
+                                             '--root', str(root / 'consumer with spaces')] + shared_args
+                                            if optin == 'true' else ['make'] + legacy_args)
+                                self.assertEqual(result.stdout.splitlines(), expected, result.stderr)
+                                self.assertEqual(result.returncode, int(status))
 
     def test_coverage_reports_and_library_na_evidence_are_preserved(self):
         summary = named('shared-go.yml', 'Coverage summary')

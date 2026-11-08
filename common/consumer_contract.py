@@ -10,6 +10,8 @@ import yaml
 
 
 SOURCE = 'fin-assist/go-ci/.github/workflows/'
+QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
+    'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
 PUSH_TOKEN = "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"
 
 
@@ -42,6 +44,30 @@ def suite(root, common):
                     self.assertNotIn('permissions', call)
                     if kind == 'go':
                         self.assertEqual(call['with']['profile'], manifest['profile'])
+                        quality = call['with'].get('quality_runner', False)
+                        self.assertIs(type(quality), bool)
+                        if quality:
+                            self.assertEqual(manifest['profile'], 'service')
+                            module = re.findall(r'(?m)^module\s+(\S+)\s*$', (root / 'go.mod').read_text())[0]
+                            self.assertIn(module, QUALITY_MODULES)
+                            for target, command in [('test-names', 'test-names'),
+                                                    ('collect-unit', 'collect "$(@:collect-%=%)"'),
+                                                    ('collect-integration', 'collect "$(@:collect-%=%)"'),
+                                                    ('collect-api', 'collect "$(@:collect-%=%)"'),
+                                                    ('check-unit', 'check "$(@:check-%=%)"'),
+                                                    ('check-integration', 'check "$(@:check-%=%)"'),
+                                                    ('check-api', 'check "$(@:check-%=%)"'),
+                                                    ('cover-combined', 'combined')]:
+                                recipe = []
+                                selected = False
+                                for line in (root / 'Makefile').read_text().splitlines():
+                                    if line and not line[0].isspace() and not line.startswith('#'):
+                                        selected = target in line.split(':', 1)[0].split()
+                                    elif selected and line.startswith('\t') and line.strip():
+                                        recipe.append(line.strip())
+                                self.assertEqual(recipe, [
+                                    '@common=$$(python3 scripts/common_ci.py) && python3 -B '
+                                    '"$$common/scripts/quality.py" --root "$(CURDIR)" ' + command])
                     expected_secrets = {} if kind == 'migrations' else {'GO_MODULES_TOKEN': PUSH_TOKEN}
                     self.assertEqual(call.get('secrets', {}), expected_secrets)
 

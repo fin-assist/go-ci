@@ -1,7 +1,7 @@
 /**
  * Optional contract test against the real, pinned Renovate package (Node 24).
  * Install the versioned fixture lock with npm ci --ignore-scripts, then:
- * RENOVATE_RUNTIME=/path/to/prefix node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
+ * python3 -I common/renovate/test.py --root /consumer --mode runtime --runtime /locked/prefix --source-revision SHA
  * The runner must impose a process timeout. No network or repository mutations occur.
  */
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 
 assert.ok(process.env.RENOVATE_RUNTIME, 'Set RENOVATE_RUNTIME to the temporary npm prefix');
 const pkg = realpathSync(resolve(process.env.RENOVATE_RUNTIME, 'node_modules/renovate'));
-const pinnedVersion=JSON.parse(readFileSync(new URL('./renovate-runtime/package.json',import.meta.url))).dependencies.renovate;
+const pinnedVersion=JSON.parse(readFileSync(process.env.RENOVATE_RUNTIME_MANIFEST)).dependencies.renovate;
 assert.match(pinnedVersion,/^[0-9]+\.[0-9]+\.[0-9]+$/);
 assert.equal(JSON.parse(readFileSync(resolve(pkg,'package.json'))).version,pinnedVersion);
 const mod = (path) => pathToFileURL(resolve(pkg, 'dist', path)).href;
@@ -77,7 +77,7 @@ function productionRules(builder, items, generation = 123) {
   // Exercise both production builders, never an imitation of policy logic.
   const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
   const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(getattr(m,sys.argv[4])(json.loads(sys.argv[2]),int(sys.argv[3]))))";
-  return JSON.parse(execFileSync('python3', ['-c', code, controller,
+  return JSON.parse(execFileSync('python3', ['-B', '-c', code, controller,
     JSON.stringify(items), String(generation), builder], {encoding:'utf8',timeout:5000}));
 }
 function update(name, value) {
@@ -197,7 +197,7 @@ const { applyPackageRules } = await import(mod('util/package-rules/index.js'));
 const controllerPath = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
 const digestInput = [{ depName:'postgres', datasource:'docker', newValue:'18', newDigest:'sha256:bad' }];
 const digestCode = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.quarantine_rules(json.loads(sys.argv[2]),99)))";
-const digestRules = JSON.parse(execFileSync('python3',['-c',digestCode,controllerPath,JSON.stringify(digestInput)],{encoding:'utf8',timeout:5000}));
+const digestRules = JSON.parse(execFileSync('python3',['-B', '-c',digestCode,controllerPath,JSON.stringify(digestInput)],{encoding:'utf8',timeout:5000}));
 for (const newDigest of ['sha256:bad','sha256:fixed']) {
   const matched = await applyPackageRules({ packageName:'postgres', depName:'postgres', datasource:'docker', newValue:'18', newDigest, packageRules:digestRules }, 'test');
   assert.equal(matched.dependencyDashboardApproval === true, newDigest === 'sha256:bad');
@@ -259,7 +259,7 @@ console.log('PASS: numeric moving tag recovers fixed digests without newMajor; o
 function stackRule(generation) {
   const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py',import.meta.url));
   const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.compose_stack_rule(int(sys.argv[2]))))";
-  return JSON.parse(execFileSync('python3',['-c',code,controller,String(generation)],{encoding:'utf8',timeout:5000}));
+  return JSON.parse(execFileSync('python3',['-B', '-c',code,controller,String(generation)],{encoding:'utf8',timeout:5000}));
 }
 const firstStackRule = stackRule(987);
 const stackBaseline = {matchPackageNames:firstStackRule.matchPackageNames,

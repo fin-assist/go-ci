@@ -17,7 +17,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.15'
-      - run: timeout 60s python3 -m unittest discover -s scripts -p 'test_renovate*.py'
+      - uses: ./.github/actions/renovate-policy-tests
+        with:
+          mode: policy
+          repository-root: ${{ github.workspace }}
 
   runtime-contract:
     name: Renovate runtime contract
@@ -40,9 +43,9 @@ jobs:
       - name: Install pinned Renovate without install scripts
         working-directory: scripts/renovate-runtime
         run: timeout 600s npm ci --ignore-scripts --no-audit --no-fund
-      - name: Verify Renovate grouping, retries and digests
-        run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_runtime.mjs
-      - name: Verify signed commit and PR metadata rendering
-        run: timeout 90s node --experimental-test-module-mocks scripts/test_renovate_metadata_runtime.mjs
-      - name: Verify Go toolchain stays manual in workflows
-        run: timeout 90s node scripts/test_renovate_go_runtime.mjs
+      - name: Verify shared Renovate runtime contracts
+        uses: ./.github/actions/renovate-policy-tests
+        with:
+          mode: runtime
+          repository-root: ${{ github.workspace }}
+          runtime-path: ${{ env.RENOVATE_RUNTIME }}

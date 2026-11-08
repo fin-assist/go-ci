@@ -103,6 +103,8 @@ Claude, workflow контроллера Renovate и workflows выпуска б�
 публикацию **сервисных** GitHub Release в [общий `shared-release.yml`](service-release.md):
 отдельный job сохраняет `contents: write`, исполняет только закреплённый общий parser и
 не исполняет PR-код. Локальные callers сохраняют свои triggers и inputs без передачи secrets.
+FIN-456 выносит код Renovate в [общие actions](shared-renovate.md), сохраняя локальные
+triggers, exact activation gate, main-only Environment и изоляцию credentials.
 Триггеры, проверки происхождения PR, Environment и секреты разных автоматизаций не унифицируются.
 Например, у `bank-bff` уже есть проверка источника PR до write-enabled Claude; унификация не должна её стереть.
 Контроллер Renovate продолжает исполнять проверенный код `main` и не читает исполняемый PR-код/artifacts
@@ -115,7 +117,7 @@ FIN-457 также описывает [общий runner тестов и coverag
 
 Общее правило меняется в `common/` одного source PR. Его self-check workflow проверяет рабочее дерево: bootstrap/render, workflows и реальные разрешённые/запрещённые lint-случаи. После ревью и команды владельца source коммит становится доступным потребителям.
 
-FIN-447 добавляет [локальный контроллер Renovate самого source](renovate-policy.md), отдельно от reusable workflows потребителей. После явной активации он обрабатывает bot-only dependency PR по `shared-source` и двум policy checks; source-код по-прежнему проходит обычный merge владельца. Go-компилятор/toolchain, включая версии setup-go в reusable workflows и смешанные PR, остаётся ручным. Baseline и подписанные metadata проверяются локальным контроллером; изменение не распространяет активацию, secrets или внешние защиты на потребителей и не меняет `common/bootstrap.py`.
+FIN-447 добавил контроллер Renovate самого source; FIN-456 переносит его код в [общие actions и регрессии](shared-renovate.md), сохраняя [локальные данные и отдельную активацию](renovate-policy.md). После явной активации он обрабатывает bot-only dependency PR по `shared-source` и двум policy checks; source-код по-прежнему проходит обычный merge владельца. Go-компилятор/toolchain, включая версии setup-go в reusable workflows и смешанные PR, остаётся ручным. Baseline и подписанные metadata проверяются общим рассмотренным контроллером; изменение не распространяет активацию, secrets или внешние защиты на потребителей и не меняет `common/bootstrap.py`.
 
 Сверка 28.10.2026: `RENOVATE_POLICY_ENABLED=true` у 11 существующих Go-репозиториев; их рассмотренный `renovate-base.json` публикуется существующим контроллером в `base.json` ветки `renovate-policy` после merge. У `go-grpc`, `go-migrate`, `go-worker` флаг равен `false`, поэтому новые managers/group размещены непосредственно в действующем `renovate.json`, без зависимости от baseline-sync; прежние presets, метаданные FIN-211 и запрет native automerge сохранены. У `bank-bff` новый прямой `renovate.json` также не активирует контроллер. Наличие флага/ветки не подменяет проверку конкретного запуска после merge; активация выключенных контроллеров не входит в FIN-372.
 
@@ -145,3 +147,8 @@ Renovate меняет pins, но не копирует `scripts/common_ci.py`. �
 ## Перенос из сервисного шаблона
 
 Решение владельца28.10.2026: общий источник размещается в отдельном `fin-assist/go-ci`. В `go-service-template` удаляются `common/` и source-only workflows/tests; оба шаблона остаются обычными потребителями. Меняются source URL, workflow repository, Renovate package identity и полный SHA вместе с matching bootstrap. Module paths сервисов/библиотек и фиксированная N/A identity не переименовываются. Откат этой первой миграции возвращает прежние координаты, pins и bootstrap одновременно.
+
+
+FIN-456: общий Renovate не требует Go-профиля у Android/contracts/infra. Его production-код и
+регрессии находятся в `common/renovate/`, конфигурация и runtime lock остаются у каждого потребителя.
+Существующий Go bootstrap не меняется. [Подключение, единый pin и безопасный откат](shared-renovate.md).

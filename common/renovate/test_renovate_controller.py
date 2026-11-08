@@ -397,9 +397,9 @@ class SignedCommitsAdapterTests(unittest.TestCase):
         valid={'data':{'repository':{'object':{'signature':{'isValid':True,'signer':{'login':'web-flow'}}}}}}
         failures=[{'errors':[{'message':'fixture failure'}],'data':None},
                   {'data':{'repository':{'object':None}}}]
-        # Calls: initial signature, phase-entry fresh, post-claim/policy fresh,
-        # then close's final fresh immediately before PATCH state=closed.
-        for phase,failure_call in [('merge',2),('retry',2),('retry',3),('close',2),('close',3),('close',4)]:
+        # Calls: initial signature, phase-entry fresh, retry's post-claim fresh;
+        # close rechecks before policy write, after it, then before PATCH state=closed.
+        for phase,failure_call in [('merge',2),('retry',2),('retry',3),('close',2),('close',3),('close',4),('close',5)]:
             for failure in failures:
                 with self.subTest(phase=phase,failure_call=failure_call,failure=failure):
                     api=RealSignerFake();calls=[]
@@ -434,7 +434,7 @@ class SignedCommitsAdapterTests(unittest.TestCase):
                             self.assertFalse(any(path.endswith('rerun-failed-jobs') for path,_ in api.actions))
                         else:
                             self.assertEqual(api.receipts,original_receipts)
-                        if phase=='close' and failure_call>=3:
+                        if phase=='close' and failure_call>=4:
                             self.assertTrue(any(rule.get('dependencyDashboardApproval') for rule in api.policy['packageRules']))
                             self.assertTrue(any(path=='policy' for path,_ in api.actions))
                         else:
@@ -870,6 +870,47 @@ class MergeabilityBoundaryTests(unittest.TestCase):
             api=Fake();api.pr.update(mergeable=mergeable,mergeable_state=state)
             reconcile(api,api.config)
             self.assertEqual(api.actions,[])
+
+class StageWorkflowTests(unittest.TestCase):
+    """The infra checks belong to stage.yml, never to the deployment workflow."""
+    def stage_api(self):
+        api = MultiWorkflowFake()
+        api.config.update(ciWorkflow='stage.yml', ciChecks=['stage'],
+                          requiredChecks=['stage', 'Renovate policy tests'])
+        api.runs['stage.yml'] = api.runs.pop('ci.yml')
+        api.jobs_by_workflow['stage.yml'] = api.jobs_by_workflow.pop('ci.yml')
+        api.jobs[0]['name'] = 'stage'
+        return api
+
+    def test_stage_configuration_green_merges_expected_sha(self):
+        api = self.stage_api()
+        reconcile(api, api.config)
+        self.assertIn(('pulls/1/merge', {'sha': 'abc', 'merge_method': 'squash'}), api.actions)
+
+    def test_failed_stage_configuration_gets_only_its_single_retry(self):
+        api = self.stage_api()
+        api.runs['stage.yml']['conclusion'] = 'failure'
+        api.jobs[0]['conclusion'] = 'failure'
+        reconcile(api, api.config)
+        self.assertIn(('actions/runs/1/rerun-failed-jobs', None), api.actions)
+        self.assertFalse(any(path == 'actions/runs/2/rerun-failed-jobs' for path, _ in api.actions))
+        self.assertFalse(any(path == 'pulls/1/merge' for path, _ in api.actions))
+
+    def test_missing_or_unfinished_stage_does_not_use_other_green_workflow(self):
+        for state in (None, 'in_progress', 'skipped', 'cancelled'):
+            with self.subTest(state=state):
+                api = self.stage_api()
+                # An unrelated green ci.yml/deploy run must not satisfy stage.
+                api.runs['ci.yml'] = dict(api.run, id=99)
+                if state is None:
+                    api.runs['stage.yml'] = None
+                elif state == 'in_progress':
+                    api.runs['stage.yml']['status'] = state
+                else:
+                    api.runs['stage.yml']['conclusion'] = state
+                reconcile(api, api.config)
+                self.assertEqual(api.actions, [])
+
 
 if __name__ == '__main__':
     unittest.main()

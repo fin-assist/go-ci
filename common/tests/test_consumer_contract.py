@@ -71,6 +71,30 @@ class ConsumerContractTests(unittest.TestCase):
                                  ('cover-combined', 'combined')]:
             text += targets + ':\n\t@common=$$(python3 scripts/common_ci.py) && python3 -B "$$common/scripts/quality.py" --root "$(CURDIR)" ' + command + '\n\n'
         (self.root / 'Makefile').write_text(text)
+        self.service_tooling()
+
+    def service_tooling(self):
+        inputs = {'revision': PIN, 'tag': '${{ inputs.tag || github.ref_name }}'}
+        if 'module github.com/fin-assist/bank-bff\n' == (self.root / 'go.mod').read_text():
+            inputs['checkout_version'] = 'v7'
+        (self.root / '.github/workflows/release.yml').write_text(yaml.safe_dump({
+            'on': {'push': {'tags': ['v*']}, 'workflow_dispatch': {
+                'inputs': {'tag': {'required': True, 'type': 'string'}}}},
+            'permissions': {'contents': 'write'}, 'jobs': {'release': {
+                'uses': CONTRACT.SOURCE + 'shared-release.yml@' + PIN,
+                'with': inputs}}}))
+        for name in ('changelog', 'stage_artifact'):
+            (self.root / 'scripts' / (name + '.py')).write_text('''from pathlib import Path
+import runpy
+import sys
+sys.dont_write_bytecode = True
+from common_ci import read_config, source_dir
+root = Path(__file__).resolve().parent.parent
+common = source_dir(root, read_config(root))
+script = common / 'scripts/''' + name + '''.py'
+sys.argv = [str(script), '--root', str(root), *sys.argv[1:]]
+runpy.run_path(str(script), run_name='__main__')
+''')
 
     def test_quality_runner_optin_only_accepts_six_explicit_services_and_matching_local_wrappers(self):
         for module in CONTRACT.QUALITY_MODULES:
@@ -104,6 +128,96 @@ class ConsumerContractTests(unittest.TestCase):
                 path = self.root / 'Makefile'
                 text = path.read_text().replace('"$$common/scripts/quality.py"', mutation)
                 path.write_text(text)
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_rejects_release_source_or_input_drift(self):
+        for mutation in ('source-pin', 'source-path', 'revision', 'tag'):
+            with self.subTest(mutation=mutation):
+                doc = self.fixture()
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                path = self.root / '.github/workflows/release.yml'
+                release = yaml.safe_load(path.read_text())
+                call = release['jobs']['release']
+                if mutation == 'source-pin':
+                    call['uses'] = call['uses'].replace(PIN, 'b' * 40)
+                elif mutation == 'source-path':
+                    call['uses'] = call['uses'].replace('shared-release', 'shared-go')
+                elif mutation == 'revision':
+                    call['with']['revision'] = 'b' * 40
+                else:
+                    call['with']['tag'] = '${{ github.sha }}'
+                path.write_text(yaml.safe_dump(release))
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_rejects_release_trigger_permissions_or_secret_drift(self):
+        for mutation in ('tag-trigger', 'manual-tag-input', 'permissions', 'secrets',
+                         'extra-workflow-run', 'extra-pull-request-target',
+                         'optional-tag', 'string-required', 'boolean-tag',
+                         'extra-job', 'job-permissions'):
+            with self.subTest(mutation=mutation):
+                doc = self.fixture()
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                path = self.root / '.github/workflows/release.yml'
+                release = yaml.safe_load(path.read_text())
+                if mutation == 'tag-trigger':
+                    release['on']['push'] = {'branches': ['main']}
+                elif mutation == 'manual-tag-input':
+                    release['on']['workflow_dispatch']['inputs'] = {}
+                elif mutation == 'permissions':
+                    release['permissions']['issues'] = 'write'
+                elif mutation == 'secrets':
+                    release['jobs']['release']['secrets'] = 'inherit'
+                elif mutation == 'extra-workflow-run':
+                    release['on']['workflow_run'] = {'workflows': ['CI'], 'types': ['completed']}
+                elif mutation == 'extra-pull-request-target':
+                    release['on']['pull_request_target'] = {}
+                elif mutation == 'optional-tag':
+                    release['on']['workflow_dispatch']['inputs']['tag']['required'] = False
+                elif mutation == 'string-required':
+                    release['on']['workflow_dispatch']['inputs']['tag']['required'] = 'true'
+                elif mutation == 'boolean-tag':
+                    release['on']['workflow_dispatch']['inputs']['tag']['type'] = 'boolean'
+                elif mutation == 'extra-job':
+                    release['jobs']['extra'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}
+                else:
+                    release['jobs']['release']['permissions'] = {'contents': 'read'}
+                path.write_text(yaml.safe_dump(release))
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_rejects_wrong_root_missing_delegation_and_bytecode_writes(self):
+        for name in ('changelog', 'stage_artifact'):
+            for mutation in ('root', 'missing-root', 'source-path', 'no-main', 'bytecode'):
+                with self.subTest(wrapper=name, mutation=mutation):
+                    doc = self.fixture()
+                    doc['jobs']['go-check']['with']['quality_runner'] = True
+                    self.quality_make()
+                    path = self.root / 'scripts' / (name + '.py')
+                    text = path.read_text()
+                    if mutation == 'root':
+                        text = text.replace('Path(__file__).resolve().parent.parent', 'Path.cwd()')
+                    elif mutation == 'missing-root':
+                        text = text.replace("'--root', str(root), ", '')
+                    elif mutation == 'source-path':
+                        text = text.replace("/ 'scripts/" + name + ".py'", "/ 'scripts/other.py'")
+                    elif mutation == 'no-main':
+                        text = text.replace(", run_name='__main__'", '')
+                    else:
+                        text = text.replace('sys.dont_write_bytecode = True', 'sys.dont_write_bytecode = False')
+                    path.write_text(text)
+                    self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_quality_optin_preserves_checkout_major_and_rejects_unknown_selector(self):
+        for module, version in [('user', 'v7'), ('bank-bff', 'v4'), ('user', 'v5')]:
+            with self.subTest(module=module, version=version):
+                doc = self.fixture('service', 'github.com/fin-assist/' + module)
+                doc['jobs']['go-check']['with']['quality_runner'] = True
+                self.quality_make()
+                path = self.root / '.github/workflows/release.yml'
+                release = yaml.safe_load(path.read_text())
+                release['jobs']['release']['with']['checkout_version'] = version
+                path.write_text(yaml.safe_dump(release))
                 self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_missing_call_wrong_uses_input_or_profile_fail(self):

@@ -175,6 +175,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow['env']['SHARED_QUALITY'], '${{ inputs.quality_runner }}')
         checkout = named('shared-go.yml', 'Checkout the pinned quality implementation')
         self.assertEqual(checkout['if'], 'inputs.quality_runner')
+        self.assertEqual(checkout['uses'], 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1')
         self.assertEqual(checkout['with'], {
             'repository': 'fin-assist/go-ci', 'ref': '${{ inputs.revision }}',
             'path': '.finassist-ci/quality-source', 'persist-credentials': False})
@@ -220,6 +221,27 @@ class SharedGoWorkflowTests(unittest.TestCase):
         for evidence in ['unit.out', 'integration.out', 'api.out', '*.jsonl',
                          '*.coverage.txt', '*.report.txt']:
             self.assertIn(evidence, upload['with']['path'].splitlines())
+
+    def test_changelog_uses_pinned_parser_only_for_opted_in_consumers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            python = root / 'python3'
+            python.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit "${FIXTURE_EXIT:-0}"\n')
+            python.chmod(0o755)
+            for profile in ('service', 'library'):
+                for optin in ('true', 'false'):
+                    for status in ('0', '7'):
+                        with self.subTest(profile=profile, optin=optin, status=status):
+                            consumer = str(root / 'consumer with spaces')
+                            result = run(named('shared-go.yml', 'CHANGELOG.md format')['run'],
+                                         PATH=str(root) + os.pathsep + os.environ['PATH'],
+                                         SHARED_PROFILE=profile, SHARED_QUALITY=optin,
+                                         GITHUB_WORKSPACE=consumer, FIXTURE_EXIT=status)
+                            expected = (['.finassist-ci/quality-source/common/scripts/changelog.py',
+                                         '--root', consumer, 'check'] if optin == 'true'
+                                        else ['scripts/changelog.py', 'check'])
+                            self.assertEqual(result.stdout.splitlines(), expected, result.stderr)
+                            self.assertEqual(result.returncode, int(status))
 
     def test_caller_script_dependencies_precede_tests_and_api_keeps_release_history(self):
         go_steps = steps('shared-go.yml')

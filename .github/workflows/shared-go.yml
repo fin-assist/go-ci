@@ -57,7 +57,7 @@ jobs:
           PY
       - name: Checkout the pinned quality implementation
         if: inputs.quality_runner
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
           ref: ${{ inputs.revision }}
@@ -97,7 +97,12 @@ jobs:
           GOTOOLCHAIN: auto
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: CHANGELOG.md format
-        run: python3 scripts/changelog.py check
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 .finassist-ci/quality-source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
+          else
+            python3 scripts/changelog.py check
+          fi
       - name: Collect unit statements coverage
         id: collect_unit
         continue-on-error: true

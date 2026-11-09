@@ -6,19 +6,6 @@
     {
       "description": "FIN-211: recovery of an automatically failed dependency family",
       "matchPackageNames": [
-        "renovate"
-      ],
-      "matchDatasources": [
-        "npm"
-      ],
-      "recreateWhen": "always",
-      "matchJsonata": [
-        "newMajor = 44"
-      ]
-    },
-    {
-      "description": "FIN-211: recovery of an automatically failed dependency family",
-      "matchPackageNames": [
         "actions/checkout"
       ],
       "matchDatasources": [
@@ -27,6 +14,19 @@
       "recreateWhen": "always",
       "matchJsonata": [
         "newMajor = 7"
+      ]
+    },
+    {
+      "description": "FIN-211: recovery of an automatically failed dependency family",
+      "matchPackageNames": [
+        "renovate"
+      ],
+      "matchDatasources": [
+        "npm"
+      ],
+      "recreateWhen": "always",
+      "matchJsonata": [
+        "newMajor = 44"
       ]
     },
     {
@@ -203,6 +203,22 @@
       "additionalBranchPrefix": "fin211-retry-34-",
       "matchJsonata": [
         "newDigest = \"3d3c42e5aac5ba805825da76410c181273ba90b1\""
+      ]
+    },
+    {
+      "description": "FIN-211: failed twice; retry explicitly in Dependency Dashboard",
+      "matchPackageNames": [
+        "renovate"
+      ],
+      "matchDatasources": [
+        "npm"
+      ],
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "never",
+      "groupName": null,
+      "additionalBranchPrefix": "fin211-retry-35-",
+      "matchJsonata": [
+        "newDigest = \"sha512-QWzhpqsRA/DRzG/Ft+TCD+SAVY8KF0pwW99EEH3C2XCihTDKC9vAj4BUXhhYgT8vqvUaZrU0EP/Bj0CckjUQww==\""
       ]
     }
   ]

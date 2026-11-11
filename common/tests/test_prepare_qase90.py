@@ -51,23 +51,30 @@ class PrepareQase90Tests(unittest.TestCase):
             temp.mkdir()
             revisions = {}
             for fixture in ("bsd", "analytics"):
-                source = root / ".finassist-ci/qase90" / fixture
-                source.mkdir(parents=True)
+                upstream = root / fixture
+                upstream.mkdir()
+                git = ["git", "-C", str(upstream), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.org"]
+                subprocess.run([*git, "init", "--quiet"], check=True, timeout=5)
+                subprocess.run([*git, "commit", "--allow-empty", "-qm", "parent"], check=True, timeout=5)
                 for name in ("go.mod", "go.sum"):
-                    (source / name).write_text(f"{fixture} fixture {name}\n")
-                def git(*args):
-                    return subprocess.check_output(["git", "-C", str(source), *args],
-                                                   text=True, timeout=5).strip()
-                git("init", "--quiet")
-                git("add", ".")
-                git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture")
-                revisions[f"{fixture.upper()}_REVISION"] = git("rev-parse", "HEAD")
+                    (upstream / name).write_text(f"{fixture} fixture {name}\n")
+                subprocess.run([*git, "add", "."], check=True, timeout=5)
+                subprocess.run([*git, "commit", "-qm", "fixture"], check=True, timeout=5)
+                source = root / ".finassist-ci/qase90" / fixture
+                subprocess.run(["git", "clone", "--quiet", "--depth", "1", upstream.as_uri(), str(source)],
+                               check=True, timeout=5)
+                revision = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True, timeout=5).strip()
+                revisions[f"{fixture.upper()}_REVISION"] = revision
             result = execute(self.steps[-1]["run"], root, RUNNER_TEMP=str(temp), **revisions)
             self.assertEqual(result.returncode, 0, result.stderr)
             for fixture in ("bsd", "analytics"):
                 package = temp / "private-ci-output/qase90" / f"{fixture}.bundle"
-                head = subprocess.check_output(["git", "bundle", "list-heads", str(package)], text=True, timeout=5)
-                self.assertEqual(head.strip(), revisions[f"{fixture.upper()}_REVISION"] + " HEAD")
+                restored = root / f"restored-{fixture}"
+                subprocess.run(["git", "clone", "--quiet", "--no-checkout", str(package), str(restored)],
+                               check=True, timeout=5)
+                subprocess.run(["git", "-C", str(restored), "checkout", "--quiet", "--detach",
+                                revisions[f"{fixture.upper()}_REVISION"]], check=True, timeout=5)
                 for name in ("go.mod", "go.sum"):
-                    self.assertEqual((temp / "private-ci-input/qase90" / fixture / name).read_text(),
-                                     f"{fixture} fixture {name}\n")
+                    expected = f"{fixture} fixture {name}\n"
+                    self.assertEqual((restored / name).read_text(), expected)
+                    self.assertEqual((temp / "private-ci-input/qase90" / fixture / name).read_text(), expected)

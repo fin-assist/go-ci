@@ -230,6 +230,26 @@ class PrivateModulePrefetchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'conflicting release checksums'):
             prefetch.merge_locks(locks, {ref: {'mod': ZIP_SUM}})
 
+    def test_graph_downloads_zip_after_mod_only_download(self):
+        leaf = ('github.com/fin-assist/go-migrate', VERSION)
+        parent = ('github.com/fin-assist/go-outbox', VERSION)
+        mod_only = {'mod': MOD_SUM}
+        full = {'mod': MOD_SUM, 'zip': ZIP_SUM}
+        graph = {MODULE: {leaf: mod_only, parent: full}, parent[0]: {leaf: full}, leaf[0]: {}}
+        locks = {(MODULE, VERSION): full.copy()}
+        downloads = []
+
+        def downloaded(module, version, hashes, *_):
+            downloads.append((module, version, hashes.copy()))
+
+        with patch.object(prefetch, 'download_module', side_effect=downloaded), \
+             patch.object(prefetch, 'archived_requirements', side_effect=lambda module, *_: graph[module]):
+            prefetch.download_locked_graph(locks, self.root, {}, {}, self.output,
+                                           {'contracts', 'go-migrate', 'go-outbox'}, transitive=True)
+
+        self.assertEqual(downloads, [(MODULE, VERSION, full), (*leaf, mod_only),
+                                     (*parent, full), (*leaf, full)])
+
     def test_archive_requires_valid_lockfile_but_ignores_dependency_replace(self):
         source = self.output / MODULE / '@v'
         source.mkdir(parents=True)

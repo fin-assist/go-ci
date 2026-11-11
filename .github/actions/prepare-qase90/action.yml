@@ -1,0 +1,67 @@
+name: Prepare pinned Qase 90 sources
+description: Package trusted fixture commits and lockfiles for bank-bff PR checks
+inputs:
+  bsd-revision:
+    description: Full bank-statement-data commit SHA selected by the trusted caller
+    required: true
+  analytics-revision:
+    description: Full analytics commit SHA selected by the trusted caller
+    required: true
+  read-token:
+    description: Read-only token for the verified fixture repositories
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify fixture scope and commit ancestry
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.read-token }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        BSD_REVISION: ${{ inputs.bsd-revision }}
+        ANALYTICS_REVISION: ${{ inputs.analytics-revision }}
+      run: |
+        test "$GITHUB_REPOSITORY" = fin-assist/bank-bff
+        case "$GITHUB_EVENT_NAME" in
+          pull_request_target) test "$HEAD_REPO" = "$GITHUB_REPOSITORY" ;;
+          workflow_dispatch) test "$GITHUB_REF" = refs/heads/fin491-ci-bootstrap ;;
+          *) exit 1 ;;
+        esac
+        [[ "$BSD_REVISION" =~ ^[0-9a-f]{40}$ && "$ANALYTICS_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+        test "$(gh api "repos/fin-assist/bank-statement-data/compare/$BSD_REVISION...main" --jq .merge_base_commit.sha)" = "$BSD_REVISION"
+        test "$(gh api "repos/fin-assist/analytics/compare/$ANALYTICS_REVISION...main" --jq .merge_base_commit.sha)" = "$ANALYTICS_REVISION"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        repository: fin-assist/bank-statement-data
+        ref: ${{ inputs.bsd-revision }}
+        path: .finassist-ci/qase90/bsd
+        token: ${{ inputs.read-token }}
+        persist-credentials: false
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        repository: fin-assist/analytics
+        ref: ${{ inputs.analytics-revision }}
+        path: .finassist-ci/qase90/analytics
+        token: ${{ inputs.read-token }}
+        persist-credentials: false
+    - name: Package verified fixture commits and lockfiles
+      shell: bash
+      env:
+        BSD_REVISION: ${{ inputs.bsd-revision }}
+        ANALYTICS_REVISION: ${{ inputs.analytics-revision }}
+      run: |
+        input="$RUNNER_TEMP/private-ci-input/qase90"
+        output="$RUNNER_TEMP/private-ci-output/qase90"
+        mkdir -p "$input" "$output"
+        for fixture in "bsd:$BSD_REVISION" "analytics:$ANALYTICS_REVISION"; do
+          name="${fixture%:*}"
+          revision="${fixture#*:}"
+          source=".finassist-ci/qase90/$name"
+          test "$(git -C "$source" rev-parse HEAD)" = "$revision"
+          mkdir "$input/$name"
+          for file in go.mod go.sum; do
+            test -f "$source/$file" && test ! -L "$source/$file" || exit 1
+            cp "$source/$file" "$input/$name/"
+          done
+          git -C "$source" bundle create "$output/$name.bundle" HEAD
+        done

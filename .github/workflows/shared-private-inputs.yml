@@ -14,6 +14,12 @@ on:
       pull_request_number:
         description: Open pull request to prepare on the reviewed bootstrap branch
         type: string
+      qase90_bsd_revision:
+        description: Pinned bank-statement-data source for bank-bff Qase 90
+        type: string
+      qase90_analytics_revision:
+        description: Pinned analytics source for bank-bff Qase 90
+        type: string
       revision:
         description: Full commit SHA of the trusted prepare implementation
         required: true
@@ -136,6 +142,14 @@ jobs:
           token: ${{ secrets.GO_MODULES_TOKEN }}
           path: .finassist-ci/requested-source
           persist-credentials: false
+      - name: Prepare the pinned Qase 90 neighbors
+        id: qase90
+        if: inputs.qase90_bsd_revision != '' || inputs.qase90_analytics_revision != ''
+        uses: ./.finassist-ci/trusted-preparation/.github/actions/prepare-qase90
+        with:
+          bsd-revision: ${{ inputs.qase90_bsd_revision }}
+          analytics-revision: ${{ inputs.qase90_analytics_revision }}
+          read-token: ${{ secrets.GO_MODULES_TOKEN }}
       - name: Read immutable manifests from the published library baselines
         if: inputs.profile == 'library'
         env:
@@ -178,6 +192,7 @@ jobs:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           ALLOWED_REPOSITORIES: ${{ inputs.allowed_module_repositories }}
           PROFILE: ${{ inputs.profile }}
+          QASE90_READY: ${{ steps.qase90.outcome == 'success' }}
         run: |
           input="$RUNNER_TEMP/private-ci-input"
           output="$RUNNER_TEMP/private-ci-output"
@@ -187,6 +202,10 @@ jobs:
             while read -r tag _sha; do
               options+=(--baseline "$input/$tag/go.mod" "$input/$tag/go.sum")
             done < "$output/library-baselines.txt"
+          elif [ "$QASE90_READY" = true ]; then
+            for fixture in bsd analytics; do
+              options+=(--baseline "$input/qase90/$fixture/go.mod" "$input/qase90/$fixture/go.sum")
+            done
           fi
           python3 .finassist-ci/trusted-preparation/common/scripts/prefetch_private_modules.py \
             --go-mod "$input/go.mod" --go-sum "$input/go.sum" --output "$output/proxy" \

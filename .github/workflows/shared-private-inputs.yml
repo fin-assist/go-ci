@@ -7,6 +7,10 @@ on:
         description: Space-separated private repositories with verified reader access
         type: string
         required: true
+      profile:
+        description: Trusted consumer module profile
+        type: string
+        default: service
       pull_request_number:
         description: Open pull request to prepare on the reviewed bootstrap branch
         type: string
@@ -72,13 +76,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pull.outputs.head }}
+          PROFILE: ${{ inputs.profile }}
         run: |
           mkdir -p "$RUNNER_TEMP/private-ci-input" "$RUNNER_TEMP/private-ci-output"
-          for file in go.mod go.sum .finassist-ci.json; do
+          for file in go.mod .finassist-ci.json; do
             gh api -H 'Accept: application/vnd.github.raw+json' \
               "repos/$GITHUB_REPOSITORY/contents/$file?ref=$HEAD_SHA" \
               > "$RUNNER_TEMP/private-ci-input/$file"
           done
+          tree="repos/$GITHUB_REPOSITORY/git/trees/$HEAD_SHA"
+          sum=$(gh api "$tree" --jq 'any(.tree[]; .path == "go.sum" and .mode == "100644")')
+          if [ "$sum" = true ]; then
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/go.sum?ref=$HEAD_SHA" \
+              > "$RUNNER_TEMP/private-ci-input/go.sum"
+          fi
           python3 - <<'PY'
           import json
           import os
@@ -86,7 +98,11 @@ jobs:
           import re
 
           source = Path(os.environ["RUNNER_TEMP"]) / "private-ci-input"
-          revision = json.loads((source / ".finassist-ci.json").read_bytes())["revision"]
+          manifest = json.loads((source / ".finassist-ci.json").read_bytes())
+          profile = os.environ["PROFILE"]
+          if profile not in {"service", "library"} or manifest["profile"] != profile:
+              raise SystemExit("The consumer CI profile and pull request manifest differ.")
+          revision = manifest["revision"]
           if not re.fullmatch("[0-9a-f]{40}", revision):
               raise SystemExit("A full go-ci SHA is required.")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -118,6 +134,28 @@ jobs:
           token: ${{ secrets.GO_MODULES_TOKEN }}
           path: .finassist-ci/requested-source
           persist-credentials: false
+      - name: Read immutable manifests from the published library baselines
+        if: inputs.profile == 'library'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          input="$RUNNER_TEMP/private-ci-input"
+          output="$RUNNER_TEMP/private-ci-output"
+          timeout 40s gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/tags?per_page=100" > "$input/tags.json"
+          python3 .finassist-ci/trusted-preparation/common/scripts/select_library_baselines.py \
+            --tags "$input/tags.json" > "$output/library-baselines.txt"
+          while read -r tag sha; do
+            [[ "$sha" =~ ^[0-9a-f]{40}$ && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            mkdir "$input/$tag"
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/go.mod?ref=$sha" > "$input/$tag/go.mod"
+            sum=$(gh api "repos/$GITHUB_REPOSITORY/git/trees/$sha" \
+              --jq 'any(.tree[]; .path == "go.sum" and .mode == "100644")')
+            if [ "$sum" = true ]; then
+              gh api -H 'Accept: application/vnd.github.raw+json' \
+                "repos/$GITHUB_REPOSITORY/contents/go.sum?ref=$sha" > "$input/$tag/go.sum"
+            fi
+          done < "$output/library-baselines.txt"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.27.x'
@@ -135,10 +173,20 @@ jobs:
         env:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           ALLOWED_REPOSITORIES: ${{ inputs.allowed_module_repositories }}
+          PROFILE: ${{ inputs.profile }}
         run: |
+          input="$RUNNER_TEMP/private-ci-input"
+          output="$RUNNER_TEMP/private-ci-output"
+          options=()
+          if [ "$PROFILE" = library ]; then
+            options+=(--include-metadata)
+            while read -r tag _sha; do
+              options+=(--baseline "$input/$tag/go.mod" "$input/$tag/go.sum")
+            done < "$output/library-baselines.txt"
+          fi
           python3 .finassist-ci/trusted-preparation/common/scripts/prefetch_private_modules.py \
-            --go-mod "$RUNNER_TEMP/private-ci-input/go.mod" --go-sum "$RUNNER_TEMP/private-ci-input/go.sum" \
-            --output "$RUNNER_TEMP/private-ci-output/proxy" --allowed-repositories "$ALLOWED_REPOSITORIES"
+            --go-mod "$input/go.mod" --go-sum "$input/go.sum" --output "$output/proxy" \
+            --allowed-repositories "$ALLOWED_REPOSITORIES" "${options[@]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: private-ci-${{ steps.pull.outputs.head }}-${{ steps.pull.outputs.base }}

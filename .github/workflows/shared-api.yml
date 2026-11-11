@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
-        uses: fin-assist/go-ci/.github/actions/restore-private-ci@9274c94dcf8914a47d1c862d441522d9d91d0146
+        uses: fin-assist/go-ci/.github/actions/restore-private-ci@540e614a1272237b05a0258cfa6be333a97fb0d5
         with:
           revision: ${{ inputs.revision }}
           run-id: ${{ inputs.private_input_run_id }}
@@ -75,14 +75,72 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Access to private modules
-        env:
-          TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
-        run: |
-          if [ -n "$TOKEN" ]; then
-            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
-          fi
       - name: API changes
+        shell: bash
         env:
           GOTOOLCHAIN: auto
-        run: python3 scripts/api_check.py
+          GITHUB_READ_TOKEN: ${{ github.token }}
+          MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          SHARED_REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$GITHUB_REPOSITORY" =~ ^fin-assist/[a-z0-9][a-z0-9-]*$ ]] || exit 1
+          origin="https://github.com/$GITHUB_REPOSITORY"
+          case "$(git remote get-url origin)" in
+            "$origin"|"$origin.git") ;;
+            *) echo 'Unexpected repository origin for live tag checks' >&2; exit 1 ;;
+          esac
+
+          # gorelease and the live tag check need only the current private repository.
+          auth=$(printf 'x-access-token:%s' "$GITHUB_READ_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=3 GIT_TERMINAL_PROMPT=0
+          export GIT_CONFIG_KEY_0="http.$origin.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: Basic $auth"
+          export GIT_CONFIG_KEY_1="http.$origin.git.extraHeader"
+          export GIT_CONFIG_VALUE_1="$GIT_CONFIG_VALUE_0"
+          export GIT_CONFIG_KEY_2=http.followRedirects GIT_CONFIG_VALUE_2=false
+          unset auth GITHUB_READ_TOKEN
+
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            prepared="$RUNNER_TEMP/finassist-private-ci"
+            test -f "$prepared/library-baselines.txt" || { echo 'Library inputs were not prepared' >&2; exit 1; }
+            while read -r tag commit; do
+              [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$commit" =~ ^[0-9a-f]{40}$ ]] || exit 1
+              if [ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$commit" ]; then
+                echo 'A prepared library baseline no longer matches the checked-out tag' >&2
+                exit 1
+              fi
+            done < "$prepared/library-baselines.txt"
+            mkdir -p "$prepared/proxy"
+            endpoint=$(mktemp "$RUNNER_TEMP/go-module-proxy.XXXXXX")
+            rm "$endpoint"
+            python3 -I ".finassist-ci/$SHARED_REVISION/common/scripts/private_module_proxy.py" \
+              --root "$prepared/proxy" --address-file "$endpoint" &
+            proxy_pid=$!
+            trap 'kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; rm -f "$endpoint"' EXIT
+            for _ in {1..50}; do
+              [ -s "$endpoint" ] && break
+              kill -0 "$proxy_pid" || exit 1
+              sleep 0.1
+            done
+            proxy=$(cat "$endpoint")
+            [[ "$proxy" =~ ^http://127\.0\.0\.1:[0-9]+$ ]] || exit 1
+            export GOPROXY="$proxy,https://proxy.golang.org"
+            export GONOPROXY="github.com/$GITHUB_REPOSITORY"
+            export GONOSUMDB="$GOPRIVATE"
+          elif [ -n "$MODULES_TOKEN" ]; then
+            auth=$(printf 'x-access-token:%s' "$MODULES_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::$auth"
+            export GIT_CONFIG_COUNT=4
+            export GIT_CONFIG_KEY_3=http.https://github.com/fin-assist/.extraHeader
+            export GIT_CONFIG_VALUE_3="Authorization: Basic $auth"
+            unset auth
+          fi
+          unset MODULES_TOKEN
+          python3 scripts/api_check.py
+          # Published development may have compatibility diagnostics, but the analyzer
+          # must still have loaded both module graphs and produced its summary.
+          if ! grep -qx '# summary' gorelease.txt || grep -q '^## errors in ' gorelease.txt; then
+            echo 'gorelease did not produce a complete compatibility report' >&2
+            exit 1
+          fi

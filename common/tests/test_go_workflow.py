@@ -139,6 +139,73 @@ class SharedGoWorkflowTests(unittest.TestCase):
         analyzer = document('shared-api.yml')['env']['GORELEASE']
         self.assertRegex(analyzer, r'^golang.org/x/exp/cmd/gorelease@v[0-9].+')
 
+    def test_library_pr_api_check_scopes_git_and_uses_prepared_proxy(self):
+        revision = 'a' * 40
+        repository = 'fin-assist/go-identity'
+        origin = f'https://github.com/{repository}'
+        step = named('shared-api.yml', 'API changes')['run']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(root), *args],
+                                               text=True, timeout=5).strip()
+
+            git('init', '--quiet')
+            git('remote', 'add', 'origin', origin + '.git')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.org',
+                'commit', '--allow-empty', '-qm', 'fixture')
+            git('tag', 'v1.2.3')
+            prepared = root / 'finassist-private-ci'
+            prepared.mkdir()
+            baselines = prepared / 'library-baselines.txt'
+            baselines.write_text(f'v1.2.3 {git("rev-parse", "HEAD")}\n')
+            scripts = root / '.finassist-ci' / revision / 'common' / 'scripts'
+            scripts.mkdir(parents=True)
+            (scripts / 'private_module_proxy.py').write_text(
+                'import signal, sys\nfrom pathlib import Path\n'
+                'Path(sys.argv[-1]).write_text("http://127.0.0.1:1234\\n")\n'
+                'signal.pause()\n')
+            (root / 'scripts').mkdir()
+            (root / 'scripts' / 'api_check.py').write_text('''\
+import os
+from pathlib import Path
+import subprocess
+
+def git_header(url):
+    result = subprocess.run(['git', 'config', '--get-urlmatch', 'http.extraHeader', url],
+                            capture_output=True, text=True, timeout=2)
+    return result.stdout.strip()
+
+origin = 'https://github.com/fin-assist/go-identity'
+for url in (origin + '/info/refs', origin + '.git/info/refs'):
+    assert git_header(url) == os.environ['GIT_CONFIG_VALUE_0']
+for url in ('https://github.com/fin-assist/contracts.git/info/refs',
+            'https://github.com/fin-assist/go-identity-other.git/info/refs',
+            'https://example.org/fin-assist/go-identity.git/info/refs'):
+    assert not git_header(url)
+assert 'GITHUB_READ_TOKEN' not in os.environ and 'MODULES_TOKEN' not in os.environ
+assert os.environ['GOPROXY'] == 'http://127.0.0.1:1234,https://proxy.golang.org'
+assert os.environ['GONOPROXY'] == 'github.com/fin-assist/go-identity'
+assert os.environ['GONOSUMDB'] == 'github.com/fin-assist/*'
+Path('gorelease.txt').write_text('# summary\\n')
+''')
+            env = {**os.environ, 'GITHUB_EVENT_NAME': 'pull_request',
+                   'GITHUB_REPOSITORY': repository, 'GITHUB_READ_TOKEN': 'fixture',
+                   'GOPRIVATE': 'github.com/fin-assist/*', 'MODULES_TOKEN': '',
+                   'RUNNER_TEMP': directory, 'SHARED_REVISION': revision}
+
+            def check():
+                return subprocess.run(['bash', '-euo', 'pipefail', '-c', step], cwd=root,
+                                      env=env, capture_output=True, text=True, timeout=8)
+
+            accepted = check()
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            baselines.write_text(f'v1.2.3 {"b" * 40}\n')
+            self.assertIn('no longer matches', check().stderr)
+            baselines.unlink()
+            self.assertIn('were not prepared', check().stderr)
+
     def test_lint_and_migrations_execute_pin_and_manifest_validation(self):
         for name in ['shared-lint.yml', 'shared-migrations.yml']:
             validation = named(name, 'Validate pin')['run']
@@ -297,7 +364,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
         checkout = next(step for step in steps('shared-api.yml')
                         if step.get('uses', '').startswith('actions/checkout@'))
         self.assertEqual(checkout['with']['fetch-depth'], 0)
-        self.assertEqual(named('shared-api.yml', 'API changes')['run'], 'python3 scripts/api_check.py')
+        self.assertIn('python3 scripts/api_check.py', named('shared-api.yml', 'API changes')['run'])
 
 
 if __name__ == '__main__':

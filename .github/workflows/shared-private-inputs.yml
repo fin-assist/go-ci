@@ -84,8 +84,10 @@ jobs:
               "repos/$GITHUB_REPOSITORY/contents/$file?ref=$HEAD_SHA" \
               > "$RUNNER_TEMP/private-ci-input/$file"
           done
-          tree="repos/$GITHUB_REPOSITORY/git/trees/$HEAD_SHA"
-          sum=$(gh api "$tree" --jq 'any(.tree[]; .path == "go.sum" and .mode == "100644")')
+          tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$HEAD_SHA" --jq .tree.sha)
+          [[ "$tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          sum=$(gh api "repos/$GITHUB_REPOSITORY/git/trees/$tree" \
+            --jq 'any(.tree[]; .path == "go.sum" and .mode == "100644")')
           if [ "$sum" = true ]; then
             gh api -H 'Accept: application/vnd.github.raw+json' \
               "repos/$GITHUB_REPOSITORY/contents/go.sum?ref=$HEAD_SHA" \
@@ -149,7 +151,9 @@ jobs:
             mkdir "$input/$tag"
             gh api -H 'Accept: application/vnd.github.raw+json' \
               "repos/$GITHUB_REPOSITORY/contents/go.mod?ref=$sha" > "$input/$tag/go.mod"
-            sum=$(gh api "repos/$GITHUB_REPOSITORY/git/trees/$sha" \
+            tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$sha" --jq .tree.sha)
+            [[ "$tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            sum=$(gh api "repos/$GITHUB_REPOSITORY/git/trees/$tree" \
               --jq 'any(.tree[]; .path == "go.sum" and .mode == "100644")')
             if [ "$sum" = true ]; then
               gh api -H 'Accept: application/vnd.github.raw+json' \

@@ -106,10 +106,13 @@ def suite(root, common):
             allowed = prepare['with']['allowed_module_repositories']
             self.assertIsInstance(allowed, str)
             self.assertTrue(all(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', repo) for repo in allowed.split()))
+            prepare_inputs = {'revision': manifest['revision'], 'allowed_module_repositories': allowed}
+            if manifest['profile'] == 'library':
+                prepare_inputs['profile'] = 'library'
             self.assertEqual(prep['jobs'], {'prepare': {
                 'if': SAME_REPO,
                 'uses': SOURCE + 'shared-private-inputs.yml@' + manifest['revision'],
-                'with': {'revision': manifest['revision'], 'allowed_module_repositories': allowed},
+                'with': prepare_inputs,
                 'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
             }})
             events = prep.get('on', prep.get(True))

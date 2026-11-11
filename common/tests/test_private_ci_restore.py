@@ -129,4 +129,10 @@ class PrivateInputRestoreTests(unittest.TestCase):
             self.assertNotIn("head.sha", checkout["with"]["ref"])
         for step in job["steps"]:
             if "uses" in step:
-                self.assertRegex(step["uses"], r"^actions/[^@]+@[0-9a-f]{40}$")
+                action = step["uses"]
+                if action.startswith("./"):
+                    self.assertEqual(action, "./.finassist-ci/trusted-preparation/.github/actions/prepare-qase90")
+                    self.assertEqual(step["id"], "qase90")
+                    self.assertLess(job["steps"].index(checkouts[0]), job["steps"].index(step))
+                else:
+                    self.assertRegex(action, r"^actions/[^@]+@[0-9a-f]{40}$")

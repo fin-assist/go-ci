@@ -72,8 +72,16 @@ def suite(root, common):
             if modules[0] != 'github.com/fin-assist/bank-bff':
                 kinds.add('migrations')
             workflow = yaml.safe_load((root / '.github/workflows/ci.yml').read_text())
-            self.assertEqual(workflow['permissions'], {'contents': 'read'})
-            self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds})
+            self.assertEqual(workflow['permissions'], {'actions': 'read', 'contents': 'read'})
+            self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds} | {'private-inputs'})
+            prep = yaml.safe_load((root / '.github/workflows/private-ci-inputs.yml').read_text())
+            self.assertEqual(prep['permissions'], {'contents': 'read', 'pull-requests': 'read'})
+            self.assertEqual(prep['jobs']['prepare']['uses'],
+                             SOURCE + 'shared-private-inputs.yml@' + manifest['revision'])
+            self.assertEqual(prep['jobs']['prepare']['with']['revision'], manifest['revision'])
+            events = prep.get('on', prep.get(True))
+            self.assertEqual(set(events), {'pull_request_target'})
+            self.assertEqual(events['pull_request_target']['branches'], ['main'])
             return manifest, workflow['jobs'], kinds
 
         def test_all_calls_use_the_manifest_source_and_profile(self):
@@ -84,6 +92,9 @@ def suite(root, common):
                     self.assertEqual(call['uses'], SOURCE + 'shared-' + kind + '.yml@' + manifest['revision'])
                     self.assertEqual(call['with']['revision'], manifest['revision'])
                     self.assertNotIn('permissions', call)
+                    self.assertEqual(call['needs'], 'private-inputs')
+                    self.assertEqual(call['with']['private_input_run_id'], '${{ needs.private-inputs.outputs.run_id }}')
+                    self.assertEqual(call['with']['private_input_artifact'], '${{ needs.private-inputs.outputs.artifact_name }}')
                     if kind == 'go':
                         self.assertEqual(call['with']['profile'], manifest['profile'])
                         quality = call['with'].get('quality_runner', False)

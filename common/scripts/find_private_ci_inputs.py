@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 PRODUCER_PATH = ".github/workflows/private-ci-inputs.yml"
 PRODUCER_EVENT = "pull_request_target"
+BOOTSTRAP_PATH = ".github/workflows/renovate-policy.yml"
 API_ORIGIN = "https://api.github.com"
 PAGE_SIZE = 100
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -66,7 +67,7 @@ def github_api(repository, token, deadline):
     return get
 
 
-def producer_run(get, repository, name):
+def producer_run(get, repository, name, bootstrap_sha=None):
     # A reopened pull request may produce the same inputs in a later run, so
     # enforce uniqueness within the selected run.
     result = get("artifacts", name=name, per_page=PAGE_SIZE)
@@ -82,9 +83,12 @@ def producer_run(get, repository, name):
 
     for run_id in sorted(runs, reverse=True):
         run = get(f"runs/{run_id}")
+        path = run.get("path", "").partition("@")[0]
+        automatic = run.get("event") == PRODUCER_EVENT and path == PRODUCER_PATH
+        bootstrap = (bootstrap_sha and run.get("event") == "workflow_dispatch"
+                     and path == BOOTSTRAP_PATH and run.get("head_sha") == bootstrap_sha)
         if (run.get("id") != run_id
-                or run.get("event") != PRODUCER_EVENT
-                or run.get("path", "").partition("@")[0] != PRODUCER_PATH
+                or not (automatic or bootstrap)
                 or (run.get("repository") or {}).get("full_name") != repository
                 or run.get("status") != "completed"
                 or run.get("conclusion") != "success"):
@@ -95,10 +99,10 @@ def producer_run(get, repository, name):
     return None
 
 
-def wait_for_producer(get, repository, name, deadline):
+def wait_for_producer(get, repository, name, deadline, bootstrap_sha=None):
     while time.monotonic() < deadline:
         try:
-            run_id = producer_run(get, repository, name)
+            run_id = producer_run(get, repository, name, bootstrap_sha)
         except TemporaryApiError:
             run_id = None
         if run_id is not None:
@@ -114,13 +118,16 @@ def main():
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--timeout-seconds", required=True, type=int, choices=range(1, 601), metavar="1-600")
+    parser.add_argument("--bootstrap-sha", default="")
     args = parser.parse_args()
+    if args.bootstrap_sha and not re.fullmatch(r"[0-9a-f]{40}", args.bootstrap_sha):
+        parser.error("bootstrap SHA must be a full commit SHA")
     try:
         name = artifact_name(args.head_sha, args.base_sha)
         repository = os.environ["GITHUB_REPOSITORY"]
         deadline = time.monotonic() + args.timeout_seconds
         get = github_api(repository, os.environ.get("INPUTS_TOKEN"), deadline)
-        run_id = wait_for_producer(get, repository, name, deadline)
+        run_id = wait_for_producer(get, repository, name, deadline, args.bootstrap_sha)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
             output.write(f"run-id={run_id}\nartifact-name={name}\n")
     except (KeyError, OSError, ValueError, RuntimeError) as exc:

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- FIN-491: добавлена доверенная подготовка приватного Go CI для пилота assistant. PR-проверки получают закреплённый исходник и проверенные зависимости без токена к другим репозиториям.
+
 - FIN-451: контроллер Renovate повторно проверяет свежесть PR перед записью quarantine/recovery и уведомлением о потраченном retry claim; поздний конфликт блокирует эти записи, сохраняя budget. Добавлены отрицательные lifecycle-тесты. Изменение касается только автоматизации репозитория.
 
 - FIN-456: контроллер Renovate и его Python/JS lifecycle-регрессии централизованы в `common/renovate/` и composite actions для 19 репозиториев. Сохранены late-conflict guards FIN-451, ручные Go updates, Compose, stage CI и durable receipts; config/runtime lock/state остаются данными потребителя. Source использует main-only локальную action без циклического self-SHA.

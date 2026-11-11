@@ -80,6 +80,9 @@ def build_images(service, fake_llm, revision, *, environ=os.environ, run=command
     secret_path = None
     try:
         arguments = ["docker", "build"]
+        cache = environ.get("FINASSIST_GO_MODULE_CACHE")
+        if cache:
+            arguments.extend(["--secret", "id=go_module_cache,src=" + cache])
         token = environ.get("GO_MODULES_TOKEN", "")
         if token:
             with tempfile.NamedTemporaryFile(mode="w", prefix="finassist-netrc-", delete=False,

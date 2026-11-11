@@ -62,7 +62,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
                     self.assertNotIn('secrets', call)
                 else:
                     self.assertFalse(call['secrets']['GO_MODULES_TOKEN']['required'])
-                self.assertEqual(workflow['permissions'], {'contents': 'read'})
+                self.assertEqual(workflow['permissions'], {'actions': 'read', 'contents': 'read'})
                 self.assertEqual(workflow['jobs']['check'].get('name', 'check'), 'check')
                 self.assertGreater(workflow['jobs']['check']['timeout-minutes'], 0)
                 for step in steps(name):
@@ -173,12 +173,13 @@ class SharedGoWorkflowTests(unittest.TestCase):
             'description': 'Explicitly use the shared test/coverage runner (FIN-457 service migration)',
             'required': False, 'default': False, 'type': 'boolean'})
         self.assertEqual(workflow['env']['SHARED_QUALITY'], '${{ inputs.quality_runner }}')
-        checkout = named('shared-go.yml', 'Checkout the pinned quality implementation')
-        self.assertEqual(checkout['if'], 'inputs.quality_runner')
+        checkout = named('shared-go.yml', 'Checkout private CI source on trusted pushes')
+        self.assertEqual(checkout['if'], "github.event_name == 'push'")
         self.assertEqual(checkout['uses'], 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1')
         self.assertEqual(checkout['with'], {
             'repository': 'fin-assist/go-ci', 'ref': '${{ inputs.revision }}',
-            'path': '.finassist-ci/quality-source', 'persist-credentials': False})
+            'path': '.finassist-ci/${{ inputs.revision }}', 'persist-credentials': False,
+            'token': "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"})
         self.assertLess(steps('shared-go.yml').index(checkout),
                         steps('shared-go.yml').index(named('shared-go.yml', 'Access to private modules')))
 
@@ -201,9 +202,9 @@ class SharedGoWorkflowTests(unittest.TestCase):
                             with self.subTest(profile=profile, step=title, optin=optin, status=status):
                                 result = run(named('shared-go.yml', title)['run'],
                                              PATH=str(root) + os.pathsep + os.environ['PATH'],
-                                             SHARED_QUALITY=optin, SHARED_PROFILE=profile,
+                                             SHARED_QUALITY=optin, SHARED_PROFILE=profile, SHARED_REVISION='a'*40,
                                              GITHUB_WORKSPACE=str(root / 'consumer with spaces'), FIXTURE_EXIT=status)
-                                expected = (['python3', '.finassist-ci/quality-source/common/scripts/quality.py',
+                                expected = (['python3', f'.finassist-ci/{"a"*40}/common/scripts/quality.py',
                                              '--root', str(root / 'consumer with spaces')] + shared_args
                                             if optin == 'true' else ['make'] + legacy_args)
                                 self.assertEqual(result.stdout.splitlines(), expected, result.stderr)
@@ -235,9 +236,9 @@ class SharedGoWorkflowTests(unittest.TestCase):
                             consumer = str(root / 'consumer with spaces')
                             result = run(named('shared-go.yml', 'CHANGELOG.md format')['run'],
                                          PATH=str(root) + os.pathsep + os.environ['PATH'],
-                                         SHARED_PROFILE=profile, SHARED_QUALITY=optin,
+                                         SHARED_PROFILE=profile, SHARED_QUALITY=optin, SHARED_REVISION='a'*40,
                                          GITHUB_WORKSPACE=consumer, FIXTURE_EXIT=status)
-                            expected = (['.finassist-ci/quality-source/common/scripts/changelog.py',
+                            expected = ([f'.finassist-ci/{"a"*40}/common/scripts/changelog.py',
                                          '--root', consumer, 'check'] if optin == 'true'
                                         else ['scripts/changelog.py', 'check'])
                             self.assertEqual(result.stdout.splitlines(), expected, result.stderr)

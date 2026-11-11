@@ -56,6 +56,19 @@ class PrivateInputsDiscoveryTest(unittest.TestCase):
                          ["artifacts", "runs/6", "runs/5", "runs/4", "runs/3", "runs/2"])
         self.assertEqual(get.call_args_list[0].kwargs["name"], NAME)
 
+    def test_bootstrap_requires_exact_reviewed_dispatch_sha_and_workflow(self):
+        bootstrap = run(1, event="workflow_dispatch", path=inputs.BOOTSTRAP_PATH, head_sha=HEAD)
+        artifacts = {"total_count": 1, "artifacts": [artifact(1)]}
+        for selected, path, expected in (
+            (None, inputs.BOOTSTRAP_PATH, None),
+            (BASE, inputs.BOOTSTRAP_PATH, None),
+            (HEAD, ".github/workflows/other.yml", None),
+            (HEAD, inputs.BOOTSTRAP_PATH, 1),
+        ):
+            with self.subTest(selected=selected, path=path):
+                get = Mock(side_effect=[artifacts, bootstrap | {"path": path}])
+                self.assertEqual(inputs.producer_run(get, REPOSITORY, NAME, selected), expected)
+
     def test_missing_success_waits_until_producer_completes(self):
         match = {"total_count": 1, "artifacts": [artifact(4)]}
         get = Mock(side_effect=[

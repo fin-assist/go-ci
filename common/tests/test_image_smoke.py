@@ -226,7 +226,7 @@ class ImageWorkflowTests(unittest.TestCase):
 
     def test_workflow_never_passes_repository_secret_to_pull_request_code(self):
         workflow = self.workflow()
-        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertGreater(workflow["jobs"]["image"]["timeout-minutes"], 0)
         steps = workflow["jobs"]["image"]["steps"]
         for step in steps:
@@ -236,7 +236,7 @@ class ImageWorkflowTests(unittest.TestCase):
             if "GO_MODULES_TOKEN" in step.get("env", {}):
                 self.assertEqual(step["env"]["GO_MODULES_TOKEN"],
                                  "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}")
-        source = next(step for step in steps if step.get("name") == "Checkout the pinned shared implementation")
+        source = next(step for step in steps if step.get("name") == "Checkout private CI source on trusted pushes")
         validation = next(step for step in steps if step.get("name") == "Local and CI pins agree")
         caller = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
         self.assertLess(steps.index(caller), steps.index(validation))
@@ -259,7 +259,7 @@ class ImageWorkflowTests(unittest.TestCase):
     def test_tested_images_keep_stage_provenance_and_fake_provider_artifact(self):
         steps = self.workflow()["jobs"]["image"]["steps"]
         extract = next(step for step in steps if step.get("name") == "Extract stage binary from the tested image")
-        self.assertEqual(extract["run"], 'python3 .finassist-ci/source/common/scripts/stage_artifact.py --root "$GITHUB_WORKSPACE" "$SERVICE" "$IMAGE_ID" stage-artifact')
+        self.assertEqual(extract["run"], 'python3 .finassist-ci/"$CI_REVISION"/common/scripts/stage_artifact.py --root "$GITHUB_WORKSPACE" "$SERVICE" "$IMAGE_ID" stage-artifact')
         self.assertEqual(extract["env"], {"IMAGE_ID": "${{ steps.image.outputs.image_id }}"})
         fake = next(step for step in steps if step.get("name") == "Extract stage fake provider from its tested image")
         self.assertEqual(fake["env"], {"IMAGE_ID": "${{ steps.image.outputs.fake_image_id }}"})

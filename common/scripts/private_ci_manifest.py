@@ -11,6 +11,12 @@ FILES = ("go.mod", "go.sum", ".finassist-ci.json")
 SHA = re.compile(r"[0-9a-f]{40}")
 
 
+def hash_input(path: Path) -> str | None:
+    if path.name == "go.sum" and not path.exists() and not path.is_symlink():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def manifest(directory: Path, revision: str) -> dict:
     if not SHA.fullmatch(revision):
         raise ValueError("A full go-ci SHA is required.")
@@ -20,7 +26,7 @@ def manifest(directory: Path, revision: str) -> dict:
     return {
         "revision": revision,
         "files": {
-            name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+            name: hash_input(directory / name)
             for name in FILES
         },
     }

@@ -39,7 +39,7 @@ class PrivateInputRestoreTests(unittest.TestCase):
                 self.assertNotEqual(execute(self.steps[0]["run"], **(valid | overrides)).returncode, 0)
 
     def test_only_exact_bundle_and_manifests_restore_the_cache(self):
-        for fault in ("", "bundle", "go.sum", "pin"):
+        for fault in ("", "no-sum", "bundle", "go.sum", "pin"):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 source, consumer = root / "source", root / "consumer"
@@ -64,7 +64,8 @@ class PrivateInputRestoreTests(unittest.TestCase):
                 subprocess.run(["git", "-C", str(shallow), "bundle", "create",
                                 str(prepared / "source.bundle"), "HEAD"], check=True, timeout=5)
                 (consumer / "go.mod").write_text("module github.com/fin-assist/assistant\n")
-                (consumer / "go.sum").write_text("verified fixture\n")
+                if fault != "no-sum":
+                    (consumer / "go.sum").write_text("verified fixture\n")
                 config = consumer / ".finassist-ci.json"
                 pin = SHA if fault == "bundle" else revision
                 config.write_text(json.dumps({"revision": pin, "profile": "service"}))
@@ -83,7 +84,7 @@ class PrivateInputRestoreTests(unittest.TestCase):
                 result = execute(self.steps[2]["run"], REVISION=pin, RUNNER_TEMP=str(root),
                                  GITHUB_ENV=str(github_env), GITHUB_WORKSPACE=str(consumer),
                                  GITHUB_ACTION_PATH=str(ACTION))
-                if fault:
+                if fault in {"bundle", "go.sum", "pin"}:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(github_env.exists())
                 else:

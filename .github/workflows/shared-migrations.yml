@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
         uses: fin-assist/go-ci/.github/actions/restore-private-ci@06b73a527f535d4d3296fa6bea74b7ee177c42d3
@@ -35,7 +36,6 @@ jobs:
           revision: ${{ inputs.revision }}
           run-id: ${{ inputs.private_input_run_id }}
           artifact-name: ${{ inputs.private_input_artifact }}
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 26

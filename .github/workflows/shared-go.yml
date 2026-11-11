@@ -101,7 +101,7 @@ jobs:
       - name: All tests belong to a suite
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" test-names
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" test-names
           else
             make test-names
           fi
@@ -116,7 +116,7 @@ jobs:
       - name: CHANGELOG.md format
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
           else
             python3 scripts/changelog.py check
           fi
@@ -125,7 +125,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect unit
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect unit
           else
             make collect-unit
           fi
@@ -137,7 +137,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check unit
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check unit
           else
             make check-unit
           fi
@@ -146,7 +146,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect integration
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect integration
           else
             make collect-integration
           fi
@@ -158,7 +158,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check integration
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check integration
           else
             make check-integration
           fi
@@ -167,7 +167,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect api
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect api
           else
             make collect-api
           fi
@@ -179,7 +179,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check api
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check api
           else
             make check-api
           fi
@@ -189,7 +189,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" combined
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" combined
           else
             make cover-combined
           fi

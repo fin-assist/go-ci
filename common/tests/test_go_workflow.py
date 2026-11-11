@@ -73,6 +73,14 @@ class SharedGoWorkflowTests(unittest.TestCase):
                         self.assertEqual(step['env']['TOKEN'],
                             "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}")
 
+    def test_migration_consumer_checkout_keeps_history(self):
+        workflow_steps = steps('shared-migrations.yml')
+        checkout = next(step for step in workflow_steps if step.get('uses', '').startswith('actions/checkout@'))
+        self.assertEqual(checkout['with']['fetch-depth'], 0)
+        restore = named('shared-migrations.yml', 'Restore private CI inputs')
+        self.assertNotIn('fetch-depth', restore['with'])
+        self.assertLess(workflow_steps.index(checkout), workflow_steps.index(restore))
+
     def test_revision_and_profile_validation_rejects_floating_or_hostile_inputs(self):
         validation = named('shared-go.yml', 'Validate shared profile and revision')['run']
         for profile in ['service', 'library']:
@@ -204,7 +212,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
                                              PATH=str(root) + os.pathsep + os.environ['PATH'],
                                              SHARED_QUALITY=optin, SHARED_PROFILE=profile, SHARED_REVISION='a'*40,
                                              GITHUB_WORKSPACE=str(root / 'consumer with spaces'), FIXTURE_EXIT=status)
-                                expected = (['python3', f'.finassist-ci/{"a"*40}/common/scripts/quality.py',
+                                expected = (['python3', '-B', f'.finassist-ci/{"a"*40}/common/scripts/quality.py',
                                              '--root', str(root / 'consumer with spaces')] + shared_args
                                             if optin == 'true' else ['make'] + legacy_args)
                                 self.assertEqual(result.stdout.splitlines(), expected, result.stderr)
@@ -238,7 +246,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
                                          PATH=str(root) + os.pathsep + os.environ['PATH'],
                                          SHARED_PROFILE=profile, SHARED_QUALITY=optin, SHARED_REVISION='a'*40,
                                          GITHUB_WORKSPACE=consumer, FIXTURE_EXIT=status)
-                            expected = ([f'.finassist-ci/{"a"*40}/common/scripts/changelog.py',
+                            expected = (['-B', f'.finassist-ci/{"a"*40}/common/scripts/changelog.py',
                                          '--root', consumer, 'check'] if optin == 'true'
                                         else ['scripts/changelog.py', 'check'])
                             self.assertEqual(result.stdout.splitlines(), expected, result.stderr)

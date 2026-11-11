@@ -1,0 +1,37 @@
+name: Find private CI inputs
+description: Locate the exact artifact from a successful trusted producer run.
+inputs:
+  token:
+    description: Read-only Actions token for the current repository.
+    required: true
+  head-sha:
+    description: Full pull request head SHA.
+    required: true
+  base-sha:
+    description: Full pull request base SHA.
+    required: true
+  timeout-seconds:
+    description: How long to wait for the producer, from 1 to 600 seconds.
+    default: '300'
+outputs:
+  run-id:
+    description: ID of the successful producer run.
+    value: ${{ steps.discover.outputs.run-id }}
+  artifact-name:
+    description: Exact artifact name for the pull request revisions.
+    value: ${{ steps.discover.outputs.artifact-name }}
+runs:
+  using: composite
+  steps:
+    - name: Find successful private inputs producer
+      id: discover
+      shell: bash
+      env:
+        INPUTS_ACTION_PATH: ${{ github.action_path }}
+        INPUTS_TOKEN: ${{ inputs.token }}
+        INPUTS_HEAD_SHA: ${{ inputs.head-sha }}
+        INPUTS_BASE_SHA: ${{ inputs.base-sha }}
+        INPUTS_TIMEOUT: ${{ inputs.timeout-seconds }}
+      run: |
+        timeout 610s python3 -I -B "$INPUTS_ACTION_PATH/../../../common/scripts/find_private_ci_inputs.py" \
+          --head-sha "$INPUTS_HEAD_SHA" --base-sha "$INPUTS_BASE_SHA" --timeout-seconds "$INPUTS_TIMEOUT"

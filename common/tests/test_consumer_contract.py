@@ -40,7 +40,8 @@ class ConsumerContractTests(unittest.TestCase):
             'jobs': {'prepare': {
                 'if': CONTRACT.SAME_REPO,
                 'uses': CONTRACT.SOURCE + 'shared-private-inputs.yml@' + PIN,
-                'with': {'revision': PIN, 'allowed_module_repositories': 'contracts go-identity'},
+                'with': {'revision': PIN, 'allowed_module_repositories': 'contracts go-identity',
+                         **({'profile': 'library'} if profile == 'library' else {})},
                 'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
             }},
         }))

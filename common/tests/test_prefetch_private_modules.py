@@ -168,6 +168,16 @@ class PrivateModulePrefetchTest(unittest.TestCase):
         })
         self.assertFalse(list(target.glob("*.zip")))
 
+        no_update = {"Path": MODULE, "Version": "latest",
+                     "Error": {"Err": f'module {MODULE}: no matching versions for query "latest"'}}
+        with patch.object(prefetch, "go_json", side_effect=[metadata, no_update]):
+            prefetch.snapshot_metadata(MODULE, self.root, env, self.output)
+        self.assertEqual((target / "list").read_text().splitlines(), versions)
+        failed_lookup = {"Path": MODULE, "Error": {"Err": "connection refused"}}
+        with patch.object(prefetch, "go_json", side_effect=[metadata, failed_lookup]):
+            with self.assertRaisesRegex(ValueError, "unexpected latest version metadata"):
+                prefetch.snapshot_metadata(MODULE, self.root, env, self.output)
+
     def test_checksum_failure_keeps_proxy_unpublished(self):
         self.go_sum.write_text(LOCKS.replace(ZIP_SUM, MOD_SUM))
         real_run = subprocess.run

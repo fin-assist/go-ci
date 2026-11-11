@@ -174,9 +174,13 @@ def snapshot_metadata(module, work, env, proxy):
     query = ["list", "-m", "-json"]
     latest = go_json([*query, "-retracted", "-versions", module + "@latest"], work, env,
                      f"list versions of {module}")
-    update = go_json([*query, module + "@latest"], work, env, f"resolve latest allowed version of {module}")
+    update = go_json([*query, "-e", module + "@latest"], work, env, f"resolve latest allowed version of {module}")
+    # An all-retracted module can have no eligible version. Keep its retraction metadata
+    # and let Go report the locked version as retracted. Other errors fail preparation.
+    no_matching_version = {"Err": f'module {module}: no matching versions for query "latest"'}
+    results = (latest,) if update.get("Path") == module and update.get("Error") == no_matching_version else (latest, update)
     selected_versions = []
-    for result in (latest, update):
+    for result in results:
         version = result.get("Version")
         if result.get("Path") != module or not isinstance(version, str) or "Error" in result:
             raise ValueError(f"unexpected latest version metadata for {module}")

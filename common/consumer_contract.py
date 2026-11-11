@@ -16,6 +16,18 @@ QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
     'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
 PUSH_TOKEN = "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"
 
+SAME_REPO = 'github.event.pull_request.head.repo.full_name == github.repository'
+DISCOVERY_CONDITION = ("github.event_name == 'pull_request' && "
+                       "github.event.pull_request.head.repo.full_name == github.repository")
+DISCOVERY_ACTION = 'fin-assist/go-ci/.github/actions/private-ci-inputs@'
+DISCOVERY_OUTPUTS = {'run_id': '${{ steps.inputs.outputs.run-id }}',
+                     'artifact_name': '${{ steps.inputs.outputs.artifact-name }}'}
+DISCOVERY_INPUTS = {'token': '${{ github.token }}',
+                    'head-sha': '${{ github.event.pull_request.head.sha }}',
+                    'base-sha': '${{ github.event.pull_request.base.sha }}'}
+CHECK_CONDITION = "${{ !cancelled() && (github.event_name == 'push' || needs.private-inputs.result == 'success') }}"
+MIGRATIONS_CONDITION = "${{ !cancelled() && github.event_name == 'pull_request' && needs.private-inputs.result == 'success' }}"
+
 DELEGATE_PROBE = '''
 import runpy, sys, types
 from pathlib import Path
@@ -72,8 +84,38 @@ def suite(root, common):
             if modules[0] != 'github.com/fin-assist/bank-bff':
                 kinds.add('migrations')
             workflow = yaml.safe_load((root / '.github/workflows/ci.yml').read_text())
-            self.assertEqual(workflow['permissions'], {'contents': 'read'})
-            self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds})
+            self.assertEqual(workflow['permissions'], {'actions': 'read', 'contents': 'read'})
+            self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds} | {'private-inputs'})
+            discover = workflow['jobs']['private-inputs']
+            self.assertEqual(discover['if'].strip(), DISCOVERY_CONDITION)
+            self.assertEqual(discover['outputs'], DISCOVERY_OUTPUTS)
+            self.assertNotIn('permissions', discover)
+            self.assertEqual(len(discover['steps']), 1)
+            step, = discover['steps']
+            self.assertEqual(step['id'], 'inputs')
+            self.assertEqual(step['uses'], DISCOVERY_ACTION + manifest['revision'])
+            self.assertNotIn('if', step)
+            discovery_inputs = dict(step['with'])
+            bootstrap = discovery_inputs.pop('bootstrap-sha', None)
+            if bootstrap is not None:
+                self.assertRegex(bootstrap, r'^[0-9a-f]{40}$')
+            self.assertEqual(discovery_inputs, DISCOVERY_INPUTS)
+            prep = yaml.safe_load((root / '.github/workflows/private-ci-inputs.yml').read_text())
+            self.assertEqual(prep['permissions'], {'contents': 'read', 'pull-requests': 'read'})
+            prepare = prep['jobs']['prepare']
+            allowed = prepare['with']['allowed_module_repositories']
+            self.assertIsInstance(allowed, str)
+            self.assertTrue(all(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', repo) for repo in allowed.split()))
+            self.assertEqual(prep['jobs'], {'prepare': {
+                'if': SAME_REPO,
+                'uses': SOURCE + 'shared-private-inputs.yml@' + manifest['revision'],
+                'with': {'revision': manifest['revision'], 'allowed_module_repositories': allowed},
+                'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
+            }})
+            events = prep.get('on', prep.get(True))
+            self.assertEqual(events, {'pull_request_target': {
+                'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
+            }})
             return manifest, workflow['jobs'], kinds
 
         def test_all_calls_use_the_manifest_source_and_profile(self):
@@ -84,6 +126,10 @@ def suite(root, common):
                     self.assertEqual(call['uses'], SOURCE + 'shared-' + kind + '.yml@' + manifest['revision'])
                     self.assertEqual(call['with']['revision'], manifest['revision'])
                     self.assertNotIn('permissions', call)
+                    self.assertEqual(call['needs'], 'private-inputs')
+                    self.assertEqual(call['if'], MIGRATIONS_CONDITION if kind == 'migrations' else CHECK_CONDITION)
+                    self.assertEqual(call['with']['private_input_run_id'], '${{ needs.private-inputs.outputs.run_id }}')
+                    self.assertEqual(call['with']['private_input_artifact'], '${{ needs.private-inputs.outputs.artifact_name }}')
                     if kind == 'go':
                         self.assertEqual(call['with']['profile'], manifest['profile'])
                         quality = call['with'].get('quality_runner', False)

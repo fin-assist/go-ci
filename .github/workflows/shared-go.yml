@@ -3,6 +3,12 @@ name: Shared Go checks
 on:
   workflow_call:
     inputs:
+      private_input_run_id:
+        description: Successful trusted workflow run containing the prepared inputs
+        type: string
+      private_input_artifact:
+        description: Prepared inputs for this exact pull request
+        type: string
       revision:
         description: Full SHA of the shared source used by the caller
         required: true
@@ -21,11 +27,13 @@ on:
         required: false
 
 permissions:
+  actions: read
   contents: read
 
 env:
   GOPRIVATE: github.com/fin-assist/*
   CI: 'true'
+  SHARED_REVISION: ${{ inputs.revision }}
   SHARED_QUALITY: ${{ inputs.quality_runner }}
 
 jobs:
@@ -55,17 +63,31 @@ jobs:
           if config['revision'] != os.environ['SHARED_REVISION'] or config['profile'] != os.environ['SHARED_PROFILE']:
               raise SystemExit('Local and CI source/profile differ')
           PY
-      - name: Checkout the pinned quality implementation
-        if: inputs.quality_runner
+      - name: Restore private CI inputs
+        if: github.event_name == 'pull_request'
+        uses: fin-assist/go-ci/.github/actions/restore-private-ci@9274c94dcf8914a47d1c862d441522d9d91d0146
+        with:
+          revision: ${{ inputs.revision }}
+          run-id: ${{ inputs.private_input_run_id }}
+          artifact-name: ${{ inputs.private_input_artifact }}
+      - name: Checkout private CI source on trusted pushes
+        if: github.event_name == 'push'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
           ref: ${{ inputs.revision }}
-          path: .finassist-ci/quality-source
+          token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          path: .finassist-ci/${{ inputs.revision }}
           persist-credentials: false
+      - name: Set the canonical go-ci cache origin
+        if: github.event_name == 'push'
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: git -C ".finassist-ci/$REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       # bank-bff script tests execute its JavaScript helpers as well.
       - uses: actions/setup-node@v7
         with:
@@ -84,7 +106,7 @@ jobs:
       - name: All tests belong to a suite
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" test-names
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" test-names
           else
             make test-names
           fi
@@ -99,7 +121,7 @@ jobs:
       - name: CHANGELOG.md format
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
           else
             python3 scripts/changelog.py check
           fi
@@ -108,7 +130,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect unit
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect unit
           else
             make collect-unit
           fi
@@ -120,7 +142,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check unit
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check unit
           else
             make check-unit
           fi
@@ -129,7 +151,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect integration
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect integration
           else
             make collect-integration
           fi
@@ -141,7 +163,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check integration
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check integration
           else
             make check-integration
           fi
@@ -150,7 +172,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect api
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect api
           else
             make collect-api
           fi
@@ -162,7 +184,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check api
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check api
           else
             make check-api
           fi
@@ -172,7 +194,7 @@ jobs:
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 .finassist-ci/quality-source/common/scripts/quality.py --root "$GITHUB_WORKSPACE" combined
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" combined
           else
             make cover-combined
           fi

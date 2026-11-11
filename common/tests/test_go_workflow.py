@@ -62,7 +62,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
                     self.assertNotIn('secrets', call)
                 else:
                     self.assertFalse(call['secrets']['GO_MODULES_TOKEN']['required'])
-                self.assertEqual(workflow['permissions'], {'contents': 'read'})
+                self.assertEqual(workflow['permissions'], {'actions': 'read', 'contents': 'read'})
                 self.assertEqual(workflow['jobs']['check'].get('name', 'check'), 'check')
                 self.assertGreater(workflow['jobs']['check']['timeout-minutes'], 0)
                 for step in steps(name):
@@ -72,6 +72,48 @@ class SharedGoWorkflowTests(unittest.TestCase):
                     if 'TOKEN' in step.get('env', {}):
                         self.assertEqual(step['env']['TOKEN'],
                             "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}")
+
+    def test_migration_consumer_checkout_keeps_history(self):
+        workflow_steps = steps('shared-migrations.yml')
+        checkout = next(step for step in workflow_steps if step.get('uses', '').startswith('actions/checkout@'))
+        self.assertEqual(checkout['with']['fetch-depth'], 0)
+        restore = named('shared-migrations.yml', 'Restore private CI inputs')
+        self.assertNotIn('fetch-depth', restore['with'])
+        self.assertLess(workflow_steps.index(checkout), workflow_steps.index(restore))
+
+    def test_trusted_push_normalizes_checkout_for_the_existing_bootstrap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / 'source'
+            (repository / 'common').mkdir(parents=True)
+            (repository / 'common/render_lint.py').write_text('# pinned source fixture\n')
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repository), *args], text=True, timeout=5).strip()
+
+            git('init', '--quiet')
+            git('add', 'common/render_lint.py')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.org', 'commit', '-qm', 'fixture')
+            revision = git('rev-parse', 'HEAD')
+            git('remote', 'add', 'origin', 'https://github.com/fin-assist/go-ci')
+            cache = root / '.finassist-ci' / revision
+            cache.parent.mkdir()
+            repository.rename(cache)
+            validate = ['python3', '-B', '-c',
+                        'import sys; from pathlib import Path; from common.bootstrap import validate_cache; '
+                        'validate_cache(Path(sys.argv[1]), sys.argv[2])', str(cache), revision]
+            bad = subprocess.run(validate, cwd=ROOT, capture_output=True, text=True, timeout=5)
+            self.assertIn('unexpected source repository', bad.stderr)
+            for workflow in ('shared-go.yml', 'shared-lint.yml', 'shared-api.yml', 'shared-image.yml'):
+                definition = document(workflow)
+                job, = definition['jobs'].values()
+                fix = next(step for step in job['steps'] if step.get('name') == 'Set the canonical go-ci cache origin')
+                self.assertEqual(fix['if'], "github.event_name == 'push'")
+                result = subprocess.run(['bash', '-e', '-c', fix['run']], cwd=root,
+                                        env={**os.environ, 'REVISION': revision},
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            good = subprocess.run(validate, cwd=ROOT, capture_output=True, text=True, timeout=5)
+            self.assertEqual(good.returncode, 0, good.stderr)
 
     def test_revision_and_profile_validation_rejects_floating_or_hostile_inputs(self):
         validation = named('shared-go.yml', 'Validate shared profile and revision')['run']
@@ -173,12 +215,13 @@ class SharedGoWorkflowTests(unittest.TestCase):
             'description': 'Explicitly use the shared test/coverage runner (FIN-457 service migration)',
             'required': False, 'default': False, 'type': 'boolean'})
         self.assertEqual(workflow['env']['SHARED_QUALITY'], '${{ inputs.quality_runner }}')
-        checkout = named('shared-go.yml', 'Checkout the pinned quality implementation')
-        self.assertEqual(checkout['if'], 'inputs.quality_runner')
+        checkout = named('shared-go.yml', 'Checkout private CI source on trusted pushes')
+        self.assertEqual(checkout['if'], "github.event_name == 'push'")
         self.assertEqual(checkout['uses'], 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1')
         self.assertEqual(checkout['with'], {
             'repository': 'fin-assist/go-ci', 'ref': '${{ inputs.revision }}',
-            'path': '.finassist-ci/quality-source', 'persist-credentials': False})
+            'path': '.finassist-ci/${{ inputs.revision }}', 'persist-credentials': False,
+            'token': "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"})
         self.assertLess(steps('shared-go.yml').index(checkout),
                         steps('shared-go.yml').index(named('shared-go.yml', 'Access to private modules')))
 
@@ -201,9 +244,9 @@ class SharedGoWorkflowTests(unittest.TestCase):
                             with self.subTest(profile=profile, step=title, optin=optin, status=status):
                                 result = run(named('shared-go.yml', title)['run'],
                                              PATH=str(root) + os.pathsep + os.environ['PATH'],
-                                             SHARED_QUALITY=optin, SHARED_PROFILE=profile,
+                                             SHARED_QUALITY=optin, SHARED_PROFILE=profile, SHARED_REVISION='a'*40,
                                              GITHUB_WORKSPACE=str(root / 'consumer with spaces'), FIXTURE_EXIT=status)
-                                expected = (['python3', '.finassist-ci/quality-source/common/scripts/quality.py',
+                                expected = (['python3', '-B', f'.finassist-ci/{"a"*40}/common/scripts/quality.py',
                                              '--root', str(root / 'consumer with spaces')] + shared_args
                                             if optin == 'true' else ['make'] + legacy_args)
                                 self.assertEqual(result.stdout.splitlines(), expected, result.stderr)
@@ -235,9 +278,9 @@ class SharedGoWorkflowTests(unittest.TestCase):
                             consumer = str(root / 'consumer with spaces')
                             result = run(named('shared-go.yml', 'CHANGELOG.md format')['run'],
                                          PATH=str(root) + os.pathsep + os.environ['PATH'],
-                                         SHARED_PROFILE=profile, SHARED_QUALITY=optin,
+                                         SHARED_PROFILE=profile, SHARED_QUALITY=optin, SHARED_REVISION='a'*40,
                                          GITHUB_WORKSPACE=consumer, FIXTURE_EXIT=status)
-                            expected = (['.finassist-ci/quality-source/common/scripts/changelog.py',
+                            expected = (['-B', f'.finassist-ci/{"a"*40}/common/scripts/changelog.py',
                                          '--root', consumer, 'check'] if optin == 'true'
                                         else ['scripts/changelog.py', 'check'])
                             self.assertEqual(result.stdout.splitlines(), expected, result.stderr)

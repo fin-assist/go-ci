@@ -80,6 +80,11 @@ def build_images(service, fake_llm, revision, *, environ=os.environ, run=command
     secret_path = None
     try:
         arguments = ["docker", "build"]
+        cache = environ.get("FINASSIST_GO_MODULE_CACHE")
+        if cache:
+            if not Path(cache).is_absolute() or not Path(cache).is_dir():
+                raise ValueError("expected a local directory for the prepared Go module cache")
+            arguments.extend(["--build-context", "go-module-cache=" + cache])
         token = environ.get("GO_MODULES_TOKEN", "")
         if token:
             with tempfile.NamedTemporaryFile(mode="w", prefix="finassist-netrc-", delete=False,

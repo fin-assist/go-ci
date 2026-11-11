@@ -32,10 +32,33 @@ class ConsumerContractTests(unittest.TestCase):
         kinds = {'go', 'lint', 'api' if profile == 'library' else 'image'}
         if module != 'github.com/fin-assist/bank-bff':
             kinds.add('migrations')
-        jobs = {}
+        (self.root / '.github/workflows/private-ci-inputs.yml').write_text(yaml.safe_dump({
+            'on': {'pull_request_target': {
+                'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
+            }},
+            'permissions': {'contents': 'read', 'pull-requests': 'read'},
+            'jobs': {'prepare': {
+                'if': CONTRACT.SAME_REPO,
+                'uses': CONTRACT.SOURCE + 'shared-private-inputs.yml@' + PIN,
+                'with': {'revision': PIN, 'allowed_module_repositories': 'contracts go-identity'},
+                'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
+            }},
+        }))
+        jobs = {'private-inputs': {
+            'if': CONTRACT.DISCOVERY_CONDITION,
+            'outputs': CONTRACT.DISCOVERY_OUTPUTS.copy(),
+            'steps': [{'id': 'inputs', 'uses': CONTRACT.DISCOVERY_ACTION + PIN,
+                       'with': CONTRACT.DISCOVERY_INPUTS.copy()}],
+        }}
         for kind in kinds:
             call = {'uses': CONTRACT.SOURCE + 'shared-' + kind + '.yml@' + PIN,
-                    'with': {'revision': PIN}}
+                    'needs': 'private-inputs',
+                    'if': CONTRACT.MIGRATIONS_CONDITION if kind == 'migrations' else CONTRACT.CHECK_CONDITION,
+                    'with': {
+                        'revision': PIN,
+                        'private_input_run_id': '${{ needs.private-inputs.outputs.run_id }}',
+                        'private_input_artifact': '${{ needs.private-inputs.outputs.artifact_name }}',
+                    }}
             if kind == 'go':
                 call['with']['profile'] = profile
             if kind != 'migrations':
@@ -46,7 +69,7 @@ class ConsumerContractTests(unittest.TestCase):
                 'env': {'RESULT': '${{ needs.' + kind + '-check.result }}'},
                 'runs-on': 'ubuntu-latest', 'timeout-minutes': 2,
                 'steps': [{'run': 'test "$RESULT" = success'}]}
-        return {'permissions': {'contents': 'read'}, 'jobs': jobs}
+        return {'permissions': {'actions': 'read', 'contents': 'read'}, 'jobs': jobs}
 
     def result(self, document):
         (self.root / '.github/workflows/ci.yml').write_text(yaml.safe_dump(document))
@@ -231,6 +254,29 @@ runpy.run_path(str(script), run_name='__main__')
                 elif change == 'input-pin': call['with']['revision'] = 'b' * 40
                 elif change == 'go-profile': call['with']['profile'] = 'library'
                 else: call['secrets'] = 'inherit'
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_private_input_discovery_rejects_drift(self):
+        for mutation in ('action', 'revision', 'head', 'condition', 'push-check', 'producer-trigger'):
+            with self.subTest(mutation=mutation):
+                doc = self.fixture()
+                discover = doc['jobs']['private-inputs']
+                step = discover['steps'][0]
+                if mutation == 'action':
+                    step['uses'] = 'actions/checkout@v7'
+                elif mutation == 'revision':
+                    step['uses'] = step['uses'].replace(PIN, 'b' * 40)
+                elif mutation == 'head':
+                    step['with']['head-sha'] = '${{ github.sha }}'
+                elif mutation == 'condition':
+                    discover['if'] = 'always()'
+                elif mutation == 'push-check':
+                    doc['jobs']['go-check'].pop('if')
+                else:
+                    path = self.root / '.github/workflows/private-ci-inputs.yml'
+                    workflow = yaml.safe_load(path.read_text())
+                    workflow['on']['pull_request'] = {}
+                    path.write_text(yaml.safe_dump(workflow))
                 self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_facade_name_needs_expression_condition_and_bypass_mutations_fail(self):

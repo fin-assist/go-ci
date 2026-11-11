@@ -1,0 +1,148 @@
+name: Prepare inputs for private Go CI
+
+on:
+  workflow_call:
+    inputs:
+      allowed_module_repositories:
+        description: Space-separated private repositories with verified reader access
+        type: string
+        required: true
+      pull_request_number:
+        description: Open pull request to prepare on the reviewed bootstrap branch
+        type: string
+      revision:
+        description: Full commit SHA of the trusted prepare implementation
+        required: true
+        type: string
+    secrets:
+      GO_MODULES_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  prepare:
+    if: >-
+      github.repository_owner == 'fin-assist' &&
+      ((github.event_name == 'pull_request_target' &&
+        (github.event.pull_request.base.ref == 'main' ||
+         startsWith(github.event.pull_request.base.ref, 'release/')) &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/fin491-ci-bootstrap'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Require a protected release target
+        if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref != 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          [[ "$TARGET_REF" =~ ^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          branch=$(jq -rn --arg ref "$TARGET_REF" '$ref | @uri')
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected)" = true
+      - name: Resolve the open pull request
+        id: pull
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_REF: ${{ github.event.pull_request.base.ref }}
+          TRUSTED_REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$NUMBER" =~ ^[1-9][0-9]*$ && "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          read -r head base target < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" --jq '
+            select(.state == "open" and .head.repo.full_name == .base.repo.full_name)
+            | "\(.head.sha) \(.base.sha) \(.base.ref)"')
+          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            test "$head" = "$EVENT_HEAD"
+            test "$base" = "$EVENT_BASE"
+            test "$target" = "$EVENT_REF"
+          else
+            test "$target" = main
+          fi
+          printf 'head=%s\nbase=%s\n' "$head" "$base" >> "$GITHUB_OUTPUT"
+      - name: Read Go manifests as data from the exact PR head
+        id: manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.pull.outputs.head }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private-ci-input" "$RUNNER_TEMP/private-ci-output"
+          for file in go.mod go.sum .finassist-ci.json; do
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/$file?ref=$HEAD_SHA" \
+              > "$RUNNER_TEMP/private-ci-input/$file"
+          done
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          source = Path(os.environ["RUNNER_TEMP"]) / "private-ci-input"
+          revision = json.loads((source / ".finassist-ci.json").read_bytes())["revision"]
+          if not re.fullmatch("[0-9a-f]{40}", revision):
+              raise SystemExit("A full go-ci SHA is required.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"revision={revision}", file=output)
+          PY
+      - name: Verify the requested go-ci commit
+        env:
+          GH_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+          SOURCE_SHA: ${{ steps.manifests.outputs.revision }}
+          TRUSTED_REVISION: ${{ inputs.revision }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$SOURCE_SHA" = "$TRUSTED_REVISION" ]; then
+            exit 0
+          fi
+          test "$(gh api "repos/fin-assist/go-ci/compare/$SOURCE_SHA...main" --jq .merge_base_commit.sha)" = "$SOURCE_SHA"
+      - name: Checkout trusted preparation scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/go-ci
+          ref: ${{ inputs.revision }}
+          token: ${{ secrets.GO_MODULES_TOKEN }}
+          path: .finassist-ci/trusted-preparation
+          persist-credentials: false
+      - name: Checkout requested go-ci commit as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/go-ci
+          ref: ${{ steps.manifests.outputs.revision }}
+          token: ${{ secrets.GO_MODULES_TOKEN }}
+          path: .finassist-ci/requested-source
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - name: Package the source commit
+        env:
+          SOURCE_SHA: ${{ steps.manifests.outputs.revision }}
+        run: |
+          test "$(git -C .finassist-ci/requested-source rev-parse HEAD)" = "$SOURCE_SHA"
+          git -C .finassist-ci/requested-source bundle create "$RUNNER_TEMP/private-ci-output/source.bundle" HEAD
+          python3 .finassist-ci/trusted-preparation/common/scripts/private_ci_manifest.py write \
+            --directory "$RUNNER_TEMP/private-ci-input" --revision "$SOURCE_SHA" \
+            --manifest "$RUNNER_TEMP/private-ci-output/manifest.json"
+      - name: Prefetch checksum-locked private modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+          ALLOWED_REPOSITORIES: ${{ inputs.allowed_module_repositories }}
+        run: |
+          python3 .finassist-ci/trusted-preparation/common/scripts/prefetch_private_modules.py \
+            --go-mod "$RUNNER_TEMP/private-ci-input/go.mod" --go-sum "$RUNNER_TEMP/private-ci-input/go.sum" \
+            --output "$RUNNER_TEMP/private-ci-output/proxy" --allowed-repositories "$ALLOWED_REPOSITORIES"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: private-ci-${{ steps.pull.outputs.head }}-${{ steps.pull.outputs.base }}
+          path: ${{ runner.temp }}/private-ci-output/
+          retention-days: 5
+          if-no-files-found: error
+          overwrite: true

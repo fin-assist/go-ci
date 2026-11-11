@@ -3,11 +3,18 @@ name: Shared migration lint
 on:
   workflow_call:
     inputs:
+      private_input_run_id:
+        description: Successful trusted workflow run containing the prepared inputs
+        type: string
+      private_input_artifact:
+        description: Prepared inputs for this exact pull request
+        type: string
       revision:
         type: string
         required: true
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -22,6 +29,13 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Restore private CI inputs
+        if: github.event_name == 'pull_request'
+        uses: fin-assist/go-ci/.github/actions/restore-private-ci@9274c94dcf8914a47d1c862d441522d9d91d0146
+        with:
+          revision: ${{ inputs.revision }}
+          run-id: ${{ inputs.private_input_run_id }}
+          artifact-name: ${{ inputs.private_input_artifact }}
       - uses: actions/setup-node@v7
         with:
           node-version: 26

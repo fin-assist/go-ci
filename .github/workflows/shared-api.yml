@@ -3,6 +3,12 @@ name: Shared Go API compatibility
 on:
   workflow_call:
     inputs:
+      private_input_run_id:
+        description: Successful trusted workflow run containing the prepared inputs
+        type: string
+      private_input_artifact:
+        description: Prepared inputs for this exact pull request
+        type: string
       revision:
         description: Full SHA of the shared source used by the caller
         required: true
@@ -12,6 +18,7 @@ on:
         required: false
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -33,6 +40,27 @@ jobs:
         with:
           fetch-depth: 0 # API comparison needs tags and release history.
           persist-credentials: false
+      - name: Restore private CI inputs
+        if: github.event_name == 'pull_request'
+        uses: fin-assist/go-ci/.github/actions/restore-private-ci@9274c94dcf8914a47d1c862d441522d9d91d0146
+        with:
+          revision: ${{ inputs.revision }}
+          run-id: ${{ inputs.private_input_run_id }}
+          artifact-name: ${{ inputs.private_input_artifact }}
+      - name: Checkout private CI source on trusted pushes
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/go-ci
+          ref: ${{ inputs.revision }}
+          token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          path: .finassist-ci/${{ inputs.revision }}
+          persist-credentials: false
+      - name: Set the canonical go-ci cache origin
+        if: github.event_name == 'push'
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: git -C ".finassist-ci/$REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
       - name: Match the local library source
         env:
           SHARED_REVISION: ${{ inputs.revision }}
@@ -46,6 +74,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: Access to private modules
         env:
           TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}

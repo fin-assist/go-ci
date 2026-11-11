@@ -80,7 +80,7 @@ Preserve agreed correctness and security guarantees when simplifying.
 
 ### Security
 
-Check PR/fork permissions, checkout credentials, secret gating to trusted pushes, and the read-only live-origin gate before write-enabled review. Preserve bounded Git operations, fixed source URL, raw cache integrity, fail-closed directory scans and local override restrictions. Treat a SHA as byte identity, not proof of authorship or ancestry main. Never execute PR code with write tokens.
+Check PR/fork permissions, checkout credentials, secret gating to trusted pushes and preparation jobs, and the read-only live-origin gate before write-enabled review. Trusted preparation reads PR manifests as data and publishes artifacts only within the verified consumer access boundary. Preserve bounded Git operations, fixed source URL, raw cache integrity, fail-closed directory scans and local override restrictions. Treat a SHA as byte identity, not proof of authorship or ancestry main. Never execute PR code with write tokens.
 
 ### Tests
 

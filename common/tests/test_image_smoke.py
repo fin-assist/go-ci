@@ -81,6 +81,21 @@ class ImageSmokeTests(unittest.TestCase):
                 self.assertEqual(build[1]["timeout"], 600)
                 self.assertIn((["docker", "run", "--rm", IMAGE_ID, "help"], {"expected": 2}), run.calls)
 
+    def test_private_module_cache_is_a_local_named_build_context(self):
+        with tempfile.TemporaryDirectory(prefix="cache with spaces ") as cache:
+            runner = Runner()
+            IMAGE.build_images("assistant", True, SHA, environ={"FINASSIST_GO_MODULE_CACHE": cache}, run=runner)
+            self.assertEqual(runner.calls[0][0], [
+                "docker", "build", "--build-context", "go-module-cache=" + cache,
+                "--build-arg", "VERSION=" + SHA, "-t", "assistant:ci", ".",
+            ])
+        for remote in ("https://example.org", "docker-image://example.org", "/nonexistent/cache"):
+            runner = Runner()
+            with self.subTest(remote=remote), self.assertRaises(ValueError):
+                IMAGE.build_images("assistant", False, SHA,
+                                   environ={"FINASSIST_GO_MODULE_CACHE": remote}, run=runner)
+            self.assertFalse(runner.calls)
+
     def test_bad_profile_fake_or_revision_never_starts_docker(self):
         cases = [("service; echo x", False, SHA), ("assistant", True, "main"),
                  ("user", True, SHA), ("assistant", "true", SHA)]
@@ -226,7 +241,7 @@ class ImageWorkflowTests(unittest.TestCase):
 
     def test_workflow_never_passes_repository_secret_to_pull_request_code(self):
         workflow = self.workflow()
-        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertGreater(workflow["jobs"]["image"]["timeout-minutes"], 0)
         steps = workflow["jobs"]["image"]["steps"]
         for step in steps:
@@ -236,7 +251,7 @@ class ImageWorkflowTests(unittest.TestCase):
             if "GO_MODULES_TOKEN" in step.get("env", {}):
                 self.assertEqual(step["env"]["GO_MODULES_TOKEN"],
                                  "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}")
-        source = next(step for step in steps if step.get("name") == "Checkout the pinned shared implementation")
+        source = next(step for step in steps if step.get("name") == "Checkout private CI source on trusted pushes")
         validation = next(step for step in steps if step.get("name") == "Local and CI pins agree")
         caller = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
         self.assertLess(steps.index(caller), steps.index(validation))
@@ -259,7 +274,7 @@ class ImageWorkflowTests(unittest.TestCase):
     def test_tested_images_keep_stage_provenance_and_fake_provider_artifact(self):
         steps = self.workflow()["jobs"]["image"]["steps"]
         extract = next(step for step in steps if step.get("name") == "Extract stage binary from the tested image")
-        self.assertEqual(extract["run"], 'python3 .finassist-ci/source/common/scripts/stage_artifact.py --root "$GITHUB_WORKSPACE" "$SERVICE" "$IMAGE_ID" stage-artifact')
+        self.assertEqual(extract["run"], 'python3 .finassist-ci/"$CI_REVISION"/common/scripts/stage_artifact.py --root "$GITHUB_WORKSPACE" "$SERVICE" "$IMAGE_ID" stage-artifact')
         self.assertEqual(extract["env"], {"IMAGE_ID": "${{ steps.image.outputs.image_id }}"})
         fake = next(step for step in steps if step.get("name") == "Extract stage fake provider from its tested image")
         self.assertEqual(fake["env"], {"IMAGE_ID": "${{ steps.image.outputs.fake_image_id }}"})

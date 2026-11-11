@@ -1,0 +1,56 @@
+name: Restore private Go CI inputs
+description: Restore the prepared source and module cache without cross-repository credentials
+inputs:
+  revision:
+    required: true
+    description: Full shared source commit SHA
+  run-id:
+    required: true
+    description: Trusted preparation workflow run
+  artifact-name:
+    required: true
+    description: Exact preparation artifact
+runs:
+  using: composite
+  steps:
+    - name: Validate private PR context
+      shell: bash
+      env:
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        REVISION: ${{ inputs.revision }}
+        RUN_ID: ${{ inputs.run-id }}
+        ARTIFACT: ${{ inputs.artifact-name }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        test "$GITHUB_EVENT_NAME" = pull_request
+        test "$HEAD_REPO" = "$GITHUB_REPOSITORY"
+        [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || exit 1
+        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+        test "$ARTIFACT" = "private-ci-$HEAD_SHA-$BASE_SHA"
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      with:
+        name: ${{ inputs.artifact-name }}
+        run-id: ${{ inputs.run-id }}
+        github-token: ${{ github.token }}
+        path: ${{ runner.temp }}/finassist-private-ci
+    - name: Verify source and prepare the Go module cache
+      shell: bash
+      env:
+        REVISION: ${{ inputs.revision }}
+      run: |
+        prepared="$RUNNER_TEMP/finassist-private-ci"
+        source=".finassist-ci/$REVISION"
+        git clone --quiet "$prepared/source.bundle" "$source"
+        git -C "$source" checkout --quiet --detach "$REVISION"
+        test "$(git -C "$source" rev-parse HEAD)" = "$REVISION"
+        git -C "$source" remote set-url origin https://github.com/fin-assist/go-ci.git
+        python3 "$GITHUB_ACTION_PATH/../../../common/scripts/private_ci_manifest.py" verify \
+          --directory "$GITHUB_WORKSPACE" --revision "$REVISION" --manifest "$prepared/manifest.json"
+        if [ -d "$prepared/proxy/github.com" ]; then
+          cache="$RUNNER_TEMP/finassist-go-mod"
+          mkdir -p "$cache/cache/download"
+          cp -R "$prepared/proxy/github.com" "$cache/cache/download/"
+          printf 'GOMODCACHE=%s\n' "$cache" >> "$GITHUB_ENV"
+          printf 'FINASSIST_GO_MODULE_CACHE=%s\n' "$prepared/proxy" >> "$GITHUB_ENV"
+        fi

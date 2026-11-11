@@ -38,8 +38,9 @@ class ConsumerContractTests(unittest.TestCase):
             }},
             'permissions': {'contents': 'read', 'pull-requests': 'read'},
             'jobs': {'prepare': {
+                'if': CONTRACT.SAME_REPO,
                 'uses': CONTRACT.SOURCE + 'shared-private-inputs.yml@' + PIN,
-                'with': {'revision': PIN},
+                'with': {'revision': PIN, 'allowed_module_repositories': 'contracts go-identity'},
                 'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
             }},
         }))

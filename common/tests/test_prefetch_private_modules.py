@@ -107,7 +107,7 @@ class PrivateModulePrefetchTest(unittest.TestCase):
             return self.fake_download(command, **options)
 
         with patch.object(subprocess, "run", run):
-            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token")
+            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories={"contracts"})
 
         package = self.output / MODULE / "@v"
         self.assertCountEqual(self.downloads, [(MODULE, OLD_VERSION), (MODULE, VERSION)])
@@ -130,7 +130,13 @@ class PrivateModulePrefetchTest(unittest.TestCase):
             return self.fake_download(command, **options)
 
         with patch.object(subprocess, "run", run), self.assertRaisesRegex(ValueError, "checksum mismatch"):
-            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token")
+            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories={"contracts"})
+        self.assertFalse(self.output.exists())
+
+    def test_unreviewed_module_is_rejected_before_cross_repo_fetch(self):
+        with patch.object(prefetch, "download_module") as download, self.assertRaisesRegex(ValueError, "outside the reviewed"):
+            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories={"other"})
+        download.assert_not_called()
         self.assertFalse(self.output.exists())
 
     def test_git_error_does_not_reveal_credentials(self):

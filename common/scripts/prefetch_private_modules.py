@@ -13,6 +13,7 @@ import tempfile
 
 PRIVATE_ROOT = "github.com/fin-assist"
 PRIVATE_PATTERN = f"{PRIVATE_ROOT}/*"
+REPOSITORY = re.compile(r"[a-z0-9][a-z0-9-]{0,99}")
 MODULE = re.compile(r"github\.com/fin-assist/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*")
 NUMBER = r"(?:0|[1-9][0-9]*)"
 PRERELEASE = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
@@ -144,7 +145,9 @@ def download_module(module, version, hashes, work, env, proxy):
         (target / f"{version}.ziphash").write_text(hashes["zip"], encoding="ascii")
 
 
-def prefetch(go_mod, go_sum, output, token):
+def prefetch(go_mod, go_sum, output, token, *, allowed_repositories):
+    if any(REPOSITORY.fullmatch(repo) is None for repo in allowed_repositories):
+        raise ValueError("invalid repository in the private module allowlist")
     if output.exists() or output.is_symlink():
         raise ValueError("proxy output must not already exist")
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".module-prefetch-") as directory:
@@ -159,6 +162,10 @@ def prefetch(go_mod, go_sum, output, token):
         input_mod.write_bytes(read_input(go_mod))
         parsed_mod = go_json(["mod", "edit", "-json", str(input_mod)], work, env, "parse go.mod")
         locks = read_locks(parsed_mod, read_input(go_sum).decode("utf-8"))
+        repositories = {module.split("/")[2] for module, _ in locks}
+        blocked = repositories - allowed_repositories
+        if blocked:
+            raise ValueError("private module repositories outside the reviewed access boundary: " + ", ".join(sorted(blocked)))
         if locks and not token:
             raise ValueError("GO_MODULES_TOKEN is required to fetch private modules")
 
@@ -183,9 +190,11 @@ def main():
     parser.add_argument("--go-mod", required=True, type=Path)
     parser.add_argument("--go-sum", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--allowed-repositories", required=True)
     args = parser.parse_args()
     try:
-        prefetch(args.go_mod, args.go_sum, args.output.absolute(), os.environ.get("GO_MODULES_TOKEN"))
+        prefetch(args.go_mod, args.go_sum, args.output.absolute(), os.environ.get("GO_MODULES_TOKEN"),
+                 allowed_repositories=set(args.allowed_repositories.split()))
     except (OSError, ValueError) as error:
         parser.exit(1, f"private module prefetch failed: {error}\n")
 

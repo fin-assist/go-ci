@@ -16,6 +16,7 @@ QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
     'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
 PUSH_TOKEN = "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"
 
+SAME_REPO = 'github.event.pull_request.head.repo.full_name == github.repository'
 DISCOVERY_CONDITION = ("github.event_name == 'pull_request' && "
                        "github.event.pull_request.head.repo.full_name == github.repository")
 DISCOVERY_ACTION = 'fin-assist/go-ci/.github/actions/private-ci-inputs@'
@@ -24,8 +25,8 @@ DISCOVERY_OUTPUTS = {'run_id': '${{ steps.inputs.outputs.run-id }}',
 DISCOVERY_INPUTS = {'token': '${{ github.token }}',
                     'head-sha': '${{ github.event.pull_request.head.sha }}',
                     'base-sha': '${{ github.event.pull_request.base.sha }}'}
-CHECK_CONDITION = "always() && (github.event_name == 'push' || needs.private-inputs.result == 'success')"
-MIGRATIONS_CONDITION = "always() && github.event_name == 'pull_request' && needs.private-inputs.result == 'success'"
+CHECK_CONDITION = "${{ !cancelled() && (github.event_name == 'push' || needs.private-inputs.result == 'success') }}"
+MIGRATIONS_CONDITION = "${{ !cancelled() && github.event_name == 'pull_request' && needs.private-inputs.result == 'success' }}"
 
 DELEGATE_PROBE = '''
 import runpy, sys, types
@@ -101,9 +102,14 @@ def suite(root, common):
             self.assertEqual(discovery_inputs, DISCOVERY_INPUTS)
             prep = yaml.safe_load((root / '.github/workflows/private-ci-inputs.yml').read_text())
             self.assertEqual(prep['permissions'], {'contents': 'read', 'pull-requests': 'read'})
+            prepare = prep['jobs']['prepare']
+            allowed = prepare['with']['allowed_module_repositories']
+            self.assertIsInstance(allowed, str)
+            self.assertTrue(all(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', repo) for repo in allowed.split()))
             self.assertEqual(prep['jobs'], {'prepare': {
+                'if': SAME_REPO,
                 'uses': SOURCE + 'shared-private-inputs.yml@' + manifest['revision'],
-                'with': {'revision': manifest['revision']},
+                'with': {'revision': manifest['revision'], 'allowed_module_repositories': allowed},
                 'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
             }})
             events = prep.get('on', prep.get(True))

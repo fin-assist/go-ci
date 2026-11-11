@@ -53,10 +53,16 @@ class PrivateInputRestoreTests(unittest.TestCase):
                 git("init", "--quiet")
                 git("add", "common/render_lint.py")
                 git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture")
+                git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "--allow-empty", "-qm", "second")
                 revision = git("rev-parse", "HEAD")
                 prepared = root / "finassist-private-ci"
                 prepared.mkdir()
-                git("bundle", "create", str(prepared / "source.bundle"), "HEAD")
+                shallow = root / "shallow"
+                subprocess.run(["git", "clone", "-q", "--depth=1", source.as_uri(), str(shallow)],
+                               check=True, timeout=5)
+                self.assertTrue((shallow / ".git/shallow").is_file())
+                subprocess.run(["git", "-C", str(shallow), "bundle", "create",
+                                str(prepared / "source.bundle"), "HEAD"], check=True, timeout=5)
                 (consumer / "go.mod").write_text("module github.com/fin-assist/assistant\n")
                 (consumer / "go.sum").write_text("verified fixture\n")
                 config = consumer / ".finassist-ci.json"

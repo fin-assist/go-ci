@@ -34,7 +34,7 @@ class ConsumerContractTests(unittest.TestCase):
             kinds.add('migrations')
         (self.root / '.github/workflows/private-ci-inputs.yml').write_text(yaml.safe_dump({
             'on': {'pull_request_target': {
-                'branches': ['main'], 'types': ['opened', 'reopened', 'synchronize'],
+                'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
             }},
             'permissions': {'contents': 'read', 'pull-requests': 'read'},
             'jobs': {'prepare': {

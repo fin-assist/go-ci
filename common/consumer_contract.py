@@ -108,7 +108,7 @@ def suite(root, common):
             }})
             events = prep.get('on', prep.get(True))
             self.assertEqual(events, {'pull_request_target': {
-                'branches': ['main'], 'types': ['opened', 'reopened', 'synchronize'],
+                'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
             }})
             return manifest, workflow['jobs'], kinds
 

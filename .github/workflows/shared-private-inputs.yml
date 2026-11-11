@@ -23,13 +23,23 @@ jobs:
     if: >-
       github.repository_owner == 'fin-assist' &&
       ((github.event_name == 'pull_request_target' &&
-        github.event.pull_request.base.ref == 'main' &&
+        (github.event.pull_request.base.ref == 'main' ||
+         startsWith(github.event.pull_request.base.ref, 'release/')) &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/fin491-ci-bootstrap'))
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
+      - name: Require a protected release target
+        if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref != 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          [[ "$TARGET_REF" =~ ^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          branch=$(jq -rn --arg ref "$TARGET_REF" '$ref | @uri')
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected)" = true
       - name: Resolve the open pull request
         id: pull
         env:
@@ -37,16 +47,20 @@ jobs:
           NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_REF: ${{ github.event.pull_request.base.ref }}
           TRUSTED_REVISION: ${{ inputs.revision }}
         run: |
           [[ "$NUMBER" =~ ^[1-9][0-9]*$ && "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          read -r head base < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" --jq '
-            select(.state == "open" and .base.ref == "main" and .head.repo.full_name == .base.repo.full_name)
-            | "\(.head.sha) \(.base.sha)"')
+          read -r head base target < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" --jq '
+            select(.state == "open" and .head.repo.full_name == .base.repo.full_name)
+            | "\(.head.sha) \(.base.sha) \(.base.ref)"')
           [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || exit 1
           if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
             test "$head" = "$EVENT_HEAD"
             test "$base" = "$EVENT_BASE"
+            test "$target" = "$EVENT_REF"
+          else
+            test "$target" = main
           fi
           printf 'head=%s\nbase=%s\n' "$head" "$base" >> "$GITHUB_OUTPUT"
       - name: Read Go manifests as data from the exact PR head

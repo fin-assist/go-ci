@@ -87,11 +87,29 @@ class PrivateInputRestoreTests(unittest.TestCase):
                     self.assertIn(f"FINASSIST_GO_MODULE_CACHE={prepared / 'proxy'}", github_env.read_text())
                     self.assertTrue((root / "finassist-go-mod/cache/download/github.com/fin-assist/module/@v/v1.0.0.ziphash").is_file())
 
+    def test_release_preparation_requires_semver_branch_and_protection(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
+        gate = next(step for step in workflow["jobs"]["prepare"]["steps"]
+                    if step.get("name") == "Require a protected release target")
+        with tempfile.TemporaryDirectory() as directory:
+            gh = Path(directory) / "gh"
+            gh.write_text('#!/bin/sh\n[ "$2" = "repos/fin-assist/assistant/branches/release%2F1.2.3" ] || exit 1\nprintf "%s\\n" "$PROTECTED"\n')
+            gh.chmod(0o755)
+            env = {"PATH": directory + os.pathsep + os.environ["PATH"], "GITHUB_REPOSITORY": "fin-assist/assistant"}
+            for ref, protected, accepted in (("release/1.2.3", "true", True),
+                                              ("release/1.2.3", "false", False),
+                                              ("release/test", "true", False),
+                                              ("release/01.2.3", "true", False)):
+                with self.subTest(ref=ref, protected=protected):
+                    result = execute(gate["run"], **env, TARGET_REF=ref, PROTECTED=protected)
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
     def test_trusted_preparation_checks_out_only_the_pinned_go_ci_repository(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
         job = workflow["jobs"]["prepare"]
         for required in ("github.event_name == 'pull_request_target'",
                          "github.event.pull_request.base.ref == 'main'",
+                         "startsWith(github.event.pull_request.base.ref, 'release/')",
                          "github.event.pull_request.head.repo.full_name == github.repository",
                          "github.event_name == 'workflow_dispatch'",
                          "github.ref == 'refs/heads/fin491-ci-bootstrap'"):

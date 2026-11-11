@@ -25,10 +25,10 @@ runs:
       run: |
         test "$GITHUB_EVENT_NAME" = pull_request
         test "$HEAD_REPO" = "$GITHUB_REPOSITORY"
-        [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ ]]
-        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || exit 1
+        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
         test "$ARTIFACT" = "private-ci-$HEAD_SHA-$BASE_SHA"
-    - uses: actions/download-artifact@v8
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
       with:
         name: ${{ inputs.artifact-name }}
         run-id: ${{ inputs.run-id }}

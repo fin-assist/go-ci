@@ -109,6 +109,13 @@ def suite(root, common):
             prepare_inputs = {'revision': manifest['revision'], 'allowed_module_repositories': allowed}
             if manifest['profile'] == 'library':
                 prepare_inputs['profile'] = 'library'
+            qase90_inputs = ('qase90_bsd_revision', 'qase90_analytics_revision')
+            if any(name in prepare['with'] for name in qase90_inputs):
+                self.assertEqual(modules[0], 'github.com/fin-assist/bank-bff')
+                for name in qase90_inputs:
+                    revision = prepare['with'].get(name, '')
+                    self.assertRegex(revision, r'^[0-9a-f]{40}$')
+                    prepare_inputs[name] = revision
             self.assertEqual(prep['jobs'], {'prepare': {
                 'if': SAME_REPO,
                 'uses': SOURCE + 'shared-private-inputs.yml@' + manifest['revision'],

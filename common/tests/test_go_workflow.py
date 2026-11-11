@@ -81,6 +81,40 @@ class SharedGoWorkflowTests(unittest.TestCase):
         self.assertNotIn('fetch-depth', restore['with'])
         self.assertLess(workflow_steps.index(checkout), workflow_steps.index(restore))
 
+    def test_trusted_push_normalizes_checkout_for_the_existing_bootstrap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / 'source'
+            (repository / 'common').mkdir(parents=True)
+            (repository / 'common/render_lint.py').write_text('# pinned source fixture\n')
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repository), *args], text=True, timeout=5).strip()
+
+            git('init', '--quiet')
+            git('add', 'common/render_lint.py')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.org', 'commit', '-qm', 'fixture')
+            revision = git('rev-parse', 'HEAD')
+            git('remote', 'add', 'origin', 'https://github.com/fin-assist/go-ci')
+            cache = root / '.finassist-ci' / revision
+            cache.parent.mkdir()
+            repository.rename(cache)
+            validate = ['python3', '-B', '-c',
+                        'import sys; from pathlib import Path; from common.bootstrap import validate_cache; '
+                        'validate_cache(Path(sys.argv[1]), sys.argv[2])', str(cache), revision]
+            bad = subprocess.run(validate, cwd=ROOT, capture_output=True, text=True, timeout=5)
+            self.assertIn('unexpected source repository', bad.stderr)
+            for workflow in ('shared-go.yml', 'shared-lint.yml', 'shared-api.yml', 'shared-image.yml'):
+                definition = document(workflow)
+                job, = definition['jobs'].values()
+                fix = next(step for step in job['steps'] if step.get('name') == 'Set the canonical go-ci cache origin')
+                self.assertEqual(fix['if'], "github.event_name == 'push'")
+                result = subprocess.run(['bash', '-e', '-c', fix['run']], cwd=root,
+                                        env={**os.environ, 'REVISION': revision},
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            good = subprocess.run(validate, cwd=ROOT, capture_output=True, text=True, timeout=5)
+            self.assertEqual(good.returncode, 0, good.stderr)
+
     def test_revision_and_profile_validation_rejects_floating_or_hostile_inputs(self):
         validation = named('shared-go.yml', 'Validate shared profile and revision')['run']
         for profile in ['service', 'library']:

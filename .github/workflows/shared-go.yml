@@ -65,7 +65,7 @@ jobs:
           PY
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
-        uses: fin-assist/go-ci/.github/actions/restore-private-ci@06b73a527f535d4d3296fa6bea74b7ee177c42d3
+        uses: fin-assist/go-ci/.github/actions/restore-private-ci@7d7767faf340d03466fb0253a1504efe184842c9
         with:
           revision: ${{ inputs.revision }}
           run-id: ${{ inputs.private_input_run_id }}
@@ -79,6 +79,11 @@ jobs:
           token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
           path: .finassist-ci/${{ inputs.revision }}
           persist-credentials: false
+      - name: Set the canonical go-ci cache origin
+        if: github.event_name == 'push'
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: git -C ".finassist-ci/$REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

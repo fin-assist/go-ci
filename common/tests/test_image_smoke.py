@@ -81,6 +81,21 @@ class ImageSmokeTests(unittest.TestCase):
                 self.assertEqual(build[1]["timeout"], 600)
                 self.assertIn((["docker", "run", "--rm", IMAGE_ID, "help"], {"expected": 2}), run.calls)
 
+    def test_private_module_cache_is_a_local_named_build_context(self):
+        with tempfile.TemporaryDirectory(prefix="cache with spaces ") as cache:
+            runner = Runner()
+            IMAGE.build_images("assistant", True, SHA, environ={"FINASSIST_GO_MODULE_CACHE": cache}, run=runner)
+            self.assertEqual(runner.calls[0][0], [
+                "docker", "build", "--build-context", "go-module-cache=" + cache,
+                "--build-arg", "VERSION=" + SHA, "-t", "assistant:ci", ".",
+            ])
+        for remote in ("https://example.org", "docker-image://example.org", "/nonexistent/cache"):
+            runner = Runner()
+            with self.subTest(remote=remote), self.assertRaises(ValueError):
+                IMAGE.build_images("assistant", False, SHA,
+                                   environ={"FINASSIST_GO_MODULE_CACHE": remote}, run=runner)
+            self.assertFalse(runner.calls)
+
     def test_bad_profile_fake_or_revision_never_starts_docker(self):
         cases = [("service; echo x", False, SHA), ("assistant", True, "main"),
                  ("user", True, SHA), ("assistant", "true", SHA)]

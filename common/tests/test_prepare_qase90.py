@@ -35,6 +35,11 @@ class PrepareQase90Tests(unittest.TestCase):
             }
             script = self.steps[0]["run"]
             self.assertEqual(execute(script, directory, **valid).returncode, 0)
+            dispatch = valid | {"GITHUB_EVENT_NAME": "workflow_dispatch", "HEAD_REPO": ""}
+            self.assertEqual(execute(script, directory, **dispatch,
+                                     GITHUB_REF="refs/heads/fin491-ci-bootstrap").returncode, 0)
+            self.assertNotEqual(execute(script, directory, **dispatch,
+                                        GITHUB_REF="refs/heads/main").returncode, 0)
             for invalid in ({"HEAD_REPO": "fork/bank-bff"}, {"GITHUB_REPOSITORY": "fin-assist/other"},
                             {"GITHUB_EVENT_NAME": "pull_request"}, {"BSD_REVISION": "main"}):
                 with self.subTest(invalid=invalid):
@@ -43,6 +48,7 @@ class PrepareQase90Tests(unittest.TestCase):
         self.assertEqual({config["repository"] for config in checkouts},
                          {"fin-assist/bank-statement-data", "fin-assist/analytics"})
         self.assertTrue(all(config["persist-credentials"] is False for config in checkouts))
+        self.assertTrue(all(config["fetch-depth"] == 1 for config in checkouts))
 
     def test_packaging_creates_two_git_bundles_and_preserves_lockfiles(self):
         with tempfile.TemporaryDirectory() as directory:

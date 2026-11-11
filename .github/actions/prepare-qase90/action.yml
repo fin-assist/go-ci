@@ -36,6 +36,7 @@ runs:
         ref: ${{ inputs.bsd-revision }}
         path: .finassist-ci/qase90/bsd
         token: ${{ inputs.read-token }}
+        fetch-depth: 1
         persist-credentials: false
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
@@ -43,6 +44,7 @@ runs:
         ref: ${{ inputs.analytics-revision }}
         path: .finassist-ci/qase90/analytics
         token: ${{ inputs.read-token }}
+        fetch-depth: 1
         persist-credentials: false
     - name: Package verified fixture commits and lockfiles
       shell: bash

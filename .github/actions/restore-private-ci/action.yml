@@ -52,6 +52,5 @@ runs:
           mkdir -p "$cache/cache/download"
           cp -R "$prepared/proxy/github.com" "$cache/cache/download/"
           printf 'GOMODCACHE=%s\n' "$cache" >> "$GITHUB_ENV"
-          tar -C "$prepared/proxy" -cf "$prepared/go-module-cache.tar" github.com
-          printf 'FINASSIST_GO_MODULE_CACHE=%s\n' "$prepared/go-module-cache.tar" >> "$GITHUB_ENV"
+          printf 'FINASSIST_GO_MODULE_CACHE=%s\n' "$prepared/proxy" >> "$GITHUB_ENV"
         fi

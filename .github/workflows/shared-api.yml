@@ -104,13 +104,15 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             prepared="$RUNNER_TEMP/finassist-private-ci"
             test -f "$prepared/library-baselines.txt" || { echo 'Library inputs were not prepared' >&2; exit 1; }
-            while read -r tag commit; do
-              [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$commit" =~ ^[0-9a-f]{40}$ ]] || exit 1
-              if [ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$commit" ]; then
-                echo 'A prepared library baseline no longer matches the checked-out tag' >&2
-                exit 1
-              fi
-            done < "$prepared/library-baselines.txt"
+            current=$(git tag --list 'v*' | { grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true; } \
+              | sort -rV | awk 'NR <= 2' | while read -r tag; do
+                commit=$(git rev-parse "refs/tags/$tag^{commit}") || exit 1
+                printf '%s %s\n' "$tag" "$commit"
+              done)
+            if [ "$current" != "$(cat "$prepared/library-baselines.txt")" ]; then
+              echo 'Release tags changed after preparation. Run the trusted private inputs workflow again before rerunning CI.' >&2
+              exit 1
+            fi
             mkdir -p "$prepared/proxy"
             endpoint=$(mktemp "$RUNNER_TEMP/go-module-proxy.XXXXXX")
             rm "$endpoint"
@@ -132,6 +134,7 @@ jobs:
             auth=$(printf 'x-access-token:%s' "$MODULES_TOKEN" | base64 | tr -d '\n')
             echo "::add-mask::$auth"
             export GIT_CONFIG_COUNT=4
+            # Place the less specific organization header after the repository headers.
             export GIT_CONFIG_KEY_3=http.https://github.com/fin-assist/.extraHeader
             export GIT_CONFIG_VALUE_3="Authorization: Basic $auth"
             unset auth
@@ -140,7 +143,7 @@ jobs:
           python3 scripts/api_check.py
           # Published development may have compatibility diagnostics, but the analyzer
           # must still have loaded both module graphs and produced its summary.
-          if ! grep -qx '# summary' gorelease.txt || grep -q '^## errors in ' gorelease.txt; then
+          if [ ! -f gorelease.txt ] || ! grep -qx '# summary' gorelease.txt || grep -q '^## errors in ' gorelease.txt; then
             echo 'gorelease did not produce a complete compatibility report' >&2
             exit 1
           fi

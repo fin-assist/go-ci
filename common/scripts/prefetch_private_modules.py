@@ -21,7 +21,6 @@ VERSION = re.compile(rf"v{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{PRERELEASE})?(?:\+inco
 CHECKSUM = re.compile(r"h1:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=")
 INPUT_LIMIT = 2 * 1024 * 1024
 PRIVATE_VERSION_LIMIT = 128
-VERSION_LIST_LIMIT = 64
 BASELINE_LIMIT = 2
 DOWNLOAD_TIMEOUT = 120
 
@@ -172,28 +171,34 @@ def download_module(module, version, hashes, work, env, proxy):
 
 def snapshot_metadata(module, work, env, proxy):
     """Expose Git version metadata to gorelease without adding unlocked archives."""
-    query = ["list", "-m", "-json", "-retracted"]
-    latest = go_json([*query, "-versions", module + "@latest"], work, env, f"list versions of {module}")
-    version = latest.get("Version", "")
-    if latest.get("Path") != module or not isinstance(version, str):
-        raise ValueError(f"unexpected latest version metadata for {module}")
-    validate_reference(module, version)
+    query = ["list", "-m", "-json"]
+    latest = go_json([*query, "-retracted", "-versions", module + "@latest"], work, env,
+                     f"list versions of {module}")
+    update = go_json([*query, module + "@latest"], work, env, f"resolve latest allowed version of {module}")
+    selected_versions = []
+    for result in (latest, update):
+        version = result.get("Version")
+        if result.get("Path") != module or not isinstance(version, str) or "Error" in result:
+            raise ValueError(f"unexpected latest version metadata for {module}")
+        validate_reference(module, version)
+        selected_versions.append(version)
     versions = latest.get("Versions") or []
-    if not isinstance(versions, list) or len(versions) > VERSION_LIST_LIMIT:
+    if not isinstance(versions, list):
         raise ValueError(f"invalid version list for {module}")
     for listed in versions:
         if not isinstance(listed, str):
             raise ValueError(f"invalid version list for {module}")
         validate_reference(module, listed)
+    version_list = "".join(item + "\n" for item in versions)
+    if len(version_list) > INPUT_LIMIT:
+        raise ValueError(f"version list is too large for {module}")
 
     root = proxy / module
     target = root / "@v"
     cached = Path(env["GOMODCACHE"]) / "cache" / "download" / module / "@v"
-    for selected in sorted(set(versions) | {version}):
-        if selected != version:
-            data = go_json([*query, f"{module}@{selected}"], work, env, f"read version metadata for {module}@{selected}")
-            if data.get("Path") != module or data.get("Version") != selected:
-                raise ValueError(f"unexpected version metadata for {module}@{selected}")
+    # Go reads the newest go.mod for retractions and may select an older update.
+    # Other mod/info pairs were already added from the checksummed locks.
+    for selected in set(selected_versions):
         filename = escape_version(selected)
         info = json.loads(read_input(cached / f"{filename}.info"))
         if info.get("Version") != selected or not isinstance(info.get("Time"), str):
@@ -204,8 +209,8 @@ def snapshot_metadata(module, work, env, proxy):
         target_mod = target / f"{filename}.mod"
         if not target_mod.exists():
             target_mod.write_bytes(read_input(cached / f"{filename}.mod"))
-    (target / "list").write_text("".join(item + "\n" for item in versions), encoding="ascii")
-    (root / "@latest").write_bytes((target / f"{escape_version(version)}.info").read_bytes())
+    (target / "list").write_text(version_list, encoding="ascii")
+    (root / "@latest").write_bytes((target / f"{escape_version(selected_versions[0])}.info").read_bytes())
 
 
 def prefetch(go_mod, go_sum, output, token, *, allowed_repositories, baselines=(), include_metadata=False):

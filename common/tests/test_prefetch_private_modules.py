@@ -142,6 +142,7 @@ class PrivateModulePrefetchTest(unittest.TestCase):
 
     def test_version_snapshot_preserves_locked_modfile_and_adds_no_archives(self):
         candidate = "v0.12.0-RC1"
+        versions = [f"v0.1.{patch_number}" for patch_number in range(70)] + [VERSION, candidate]
         env = {"GOMODCACHE": str(self.root / "cache")}
         cached = self.root / "cache" / "cache/download" / MODULE / "@v"
         target = self.output / MODULE / "@v"
@@ -155,10 +156,11 @@ class PrivateModulePrefetchTest(unittest.TestCase):
             }))
             (cached / f"{filename}.mod").write_text("metadata modfile")
 
-        metadata = {"Path": MODULE, "Version": candidate, "Versions": [VERSION, candidate]}
-        with patch.object(prefetch, "go_json", side_effect=[metadata, {"Path": MODULE, "Version": VERSION}]):
+        metadata = {"Path": MODULE, "Version": candidate, "Versions": versions}
+        with patch.object(prefetch, "go_json", side_effect=[metadata, {"Path": MODULE, "Version": VERSION}]) as go:
             prefetch.snapshot_metadata(MODULE, self.root, env, self.output)
-        self.assertEqual((target / "list").read_text(), f"{VERSION}\n{candidate}\n")
+        self.assertEqual(go.call_count, 2)
+        self.assertEqual((target / "list").read_text().splitlines(), versions)
         self.assertEqual((target / f"{VERSION}.mod").read_text(), "verified modfile")
         self.assertEqual((target / "v0.12.0-!r!c1.mod").read_text(), "metadata modfile")
         self.assertEqual(json.loads((target.parent / "@latest").read_text()), {

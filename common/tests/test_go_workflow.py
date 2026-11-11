@@ -139,7 +139,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
         analyzer = document('shared-api.yml')['env']['GORELEASE']
         self.assertRegex(analyzer, r'^golang.org/x/exp/cmd/gorelease@v[0-9].+')
 
-    def test_library_pr_api_check_scopes_git_and_uses_prepared_proxy(self):
+    def test_library_api_check_scopes_git_and_requires_prepared_inputs_and_report(self):
         revision = 'a' * 40
         repository = 'fin-assist/go-identity'
         origin = f'https://github.com/{repository}'
@@ -168,6 +168,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
                 'signal.pause()\n')
             (root / 'scripts').mkdir()
             (root / 'scripts' / 'api_check.py').write_text('''\
+import base64
 import os
 from pathlib import Path
 import subprocess
@@ -180,29 +181,50 @@ def git_header(url):
 origin = 'https://github.com/fin-assist/go-identity'
 for url in (origin + '/info/refs', origin + '.git/info/refs'):
     assert git_header(url) == os.environ['GIT_CONFIG_VALUE_0']
-for url in ('https://github.com/fin-assist/contracts.git/info/refs',
-            'https://github.com/fin-assist/go-identity-other.git/info/refs',
-            'https://example.org/fin-assist/go-identity.git/info/refs'):
-    assert not git_header(url)
+assert not git_header('https://example.org/fin-assist/go-identity.git/info/refs')
 assert 'GITHUB_READ_TOKEN' not in os.environ and 'MODULES_TOKEN' not in os.environ
-assert os.environ['GOPROXY'] == 'http://127.0.0.1:1234,https://proxy.golang.org'
-assert os.environ['GONOPROXY'] == 'github.com/fin-assist/go-identity'
-assert os.environ['GONOSUMDB'] == 'github.com/fin-assist/*'
-Path('gorelease.txt').write_text('# summary\\n')
+contracts = 'https://github.com/fin-assist/contracts.git/info/refs'
+neighbor = 'https://github.com/fin-assist/go-identity-other.git/info/refs'
+if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
+    assert not git_header(contracts) and not git_header(neighbor)
+    assert os.environ['GOPROXY'] == 'http://127.0.0.1:1234,https://proxy.golang.org'
+    assert os.environ['GONOPROXY'] == 'github.com/fin-assist/go-identity'
+    assert os.environ['GONOSUMDB'] == 'github.com/fin-assist/*'
+else:
+    expected = 'Authorization: Basic ' + base64.b64encode(b'x-access-token:trusted-fixture').decode()
+    assert git_header(contracts) == expected
+    assert git_header(neighbor) == expected
+report = os.environ.get('FIXTURE_REPORT')
+if report is not None:
+    Path('gorelease.txt').write_text(report)
 ''')
             env = {**os.environ, 'GITHUB_EVENT_NAME': 'pull_request',
                    'GITHUB_REPOSITORY': repository, 'GITHUB_READ_TOKEN': 'fixture',
                    'GOPRIVATE': 'github.com/fin-assist/*', 'MODULES_TOKEN': '',
                    'RUNNER_TEMP': directory, 'SHARED_REVISION': revision}
 
-            def check():
+            def check(report='# summary\n', **options):
+                (root / 'gorelease.txt').unlink(missing_ok=True)
+                test_env = env | options
+                if report is not None:
+                    test_env['FIXTURE_REPORT'] = report
                 return subprocess.run(['bash', '-euo', 'pipefail', '-c', step], cwd=root,
-                                      env=env, capture_output=True, text=True, timeout=8)
+                                      env=test_env, capture_output=True, text=True, timeout=8)
 
             accepted = check()
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            push = check(GITHUB_EVENT_NAME='push', MODULES_TOKEN='trusted-fixture')
+            self.assertEqual(push.returncode, 0, push.stderr)
+            for report in (None, 'incomplete report\n', '## errors in library\n# summary\n'):
+                with self.subTest(report=report):
+                    result = check(report)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('did not produce a complete compatibility report', result.stderr)
+            git('tag', 'v1.3.0')
+            self.assertIn('Release tags changed after preparation', check().stderr)
+            git('tag', '-d', 'v1.3.0')
             baselines.write_text(f'v1.2.3 {"b" * 40}\n')
-            self.assertIn('no longer matches', check().stderr)
+            self.assertIn('Release tags changed after preparation', check().stderr)
             baselines.unlink()
             self.assertIn('were not prepared', check().stderr)
 

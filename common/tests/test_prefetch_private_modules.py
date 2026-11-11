@@ -100,7 +100,7 @@ class PrivateModulePrefetchTest(unittest.TestCase):
         real_run = subprocess.run
 
         def run(command, **options):
-            if command[:4] == ["go", "mod", "edit", "-json"]:
+            if command == ["go", "telemetry", "off"] or command[:4] == ["go", "mod", "edit", "-json"]:
                 self.assertNotIn("GIT_CONFIG_VALUE_0", options["env"])
                 self.assertNotIn("GO_MODULES_TOKEN", options["env"])
                 return real_run(command, **options)
@@ -125,7 +125,7 @@ class PrivateModulePrefetchTest(unittest.TestCase):
         real_run = subprocess.run
 
         def run(command, **options):
-            if command[:4] == ["go", "mod", "edit", "-json"]:
+            if command == ["go", "telemetry", "off"] or command[:4] == ["go", "mod", "edit", "-json"]:
                 return real_run(command, **options)
             return self.fake_download(command, **options)
 

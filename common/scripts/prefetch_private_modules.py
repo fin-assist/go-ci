@@ -150,6 +150,11 @@ def prefetch(go_mod, go_sum, output, token):
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".module-prefetch-") as directory:
         work = Path(directory)
         env = go_environment(work)
+        try:
+            subprocess.run(["go", "telemetry", "off"], cwd=work, env=env, stdin=subprocess.DEVNULL,
+                           capture_output=True, check=True, timeout=DOWNLOAD_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            raise ValueError("could not disable Go telemetry in the temporary home") from None
         input_mod = work / "input.mod"
         input_mod.write_bytes(read_input(go_mod))
         parsed_mod = go_json(["mod", "edit", "-json", str(input_mod)], work, env, "parse go.mod")

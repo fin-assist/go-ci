@@ -76,12 +76,15 @@ def suite(root, common):
             self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds} | {'private-inputs'})
             prep = yaml.safe_load((root / '.github/workflows/private-ci-inputs.yml').read_text())
             self.assertEqual(prep['permissions'], {'contents': 'read', 'pull-requests': 'read'})
-            self.assertEqual(prep['jobs']['prepare']['uses'],
-                             SOURCE + 'shared-private-inputs.yml@' + manifest['revision'])
-            self.assertEqual(prep['jobs']['prepare']['with']['revision'], manifest['revision'])
+            self.assertEqual(prep['jobs'], {'prepare': {
+                'uses': SOURCE + 'shared-private-inputs.yml@' + manifest['revision'],
+                'with': {'revision': manifest['revision']},
+                'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
+            }})
             events = prep.get('on', prep.get(True))
-            self.assertEqual(set(events), {'pull_request_target'})
-            self.assertEqual(events['pull_request_target']['branches'], ['main'])
+            self.assertEqual(events, {'pull_request_target': {
+                'branches': ['main'], 'types': ['opened', 'reopened', 'synchronize'],
+            }})
             return manifest, workflow['jobs'], kinds
 
         def test_all_calls_use_the_manifest_source_and_profile(self):

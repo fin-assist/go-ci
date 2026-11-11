@@ -32,10 +32,26 @@ class ConsumerContractTests(unittest.TestCase):
         kinds = {'go', 'lint', 'api' if profile == 'library' else 'image'}
         if module != 'github.com/fin-assist/bank-bff':
             kinds.add('migrations')
-        jobs = {}
+        (self.root / '.github/workflows/private-ci-inputs.yml').write_text(yaml.safe_dump({
+            'on': {'pull_request_target': {
+                'branches': ['main'], 'types': ['opened', 'reopened', 'synchronize'],
+            }},
+            'permissions': {'contents': 'read', 'pull-requests': 'read'},
+            'jobs': {'prepare': {
+                'uses': CONTRACT.SOURCE + 'shared-private-inputs.yml@' + PIN,
+                'with': {'revision': PIN},
+                'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
+            }},
+        }))
+        jobs = {'private-inputs': {}}
         for kind in kinds:
             call = {'uses': CONTRACT.SOURCE + 'shared-' + kind + '.yml@' + PIN,
-                    'with': {'revision': PIN}}
+                    'needs': 'private-inputs',
+                    'with': {
+                        'revision': PIN,
+                        'private_input_run_id': '${{ needs.private-inputs.outputs.run_id }}',
+                        'private_input_artifact': '${{ needs.private-inputs.outputs.artifact_name }}',
+                    }}
             if kind == 'go':
                 call['with']['profile'] = profile
             if kind != 'migrations':
@@ -46,7 +62,7 @@ class ConsumerContractTests(unittest.TestCase):
                 'env': {'RESULT': '${{ needs.' + kind + '-check.result }}'},
                 'runs-on': 'ubuntu-latest', 'timeout-minutes': 2,
                 'steps': [{'run': 'test "$RESULT" = success'}]}
-        return {'permissions': {'contents': 'read'}, 'jobs': jobs}
+        return {'permissions': {'actions': 'read', 'contents': 'read'}, 'jobs': jobs}
 
     def result(self, document):
         (self.root / '.github/workflows/ci.yml').write_text(yaml.safe_dump(document))

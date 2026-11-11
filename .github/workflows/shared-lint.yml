@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
-        uses: fin-assist/go-ci/.github/actions/restore-private-ci@7d7767faf340d03466fb0253a1504efe184842c9
+        uses: fin-assist/go-ci/.github/actions/restore-private-ci@9274c94dcf8914a47d1c862d441522d9d91d0146
         with:
           revision: ${{ inputs.revision }}
           run-id: ${{ inputs.private_input_run_id }}

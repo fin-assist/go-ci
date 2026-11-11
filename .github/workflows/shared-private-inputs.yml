@@ -39,11 +39,11 @@ jobs:
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
           TRUSTED_REVISION: ${{ inputs.revision }}
         run: |
-          [[ "$NUMBER" =~ ^[1-9][0-9]*$ && "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$NUMBER" =~ ^[1-9][0-9]*$ && "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1
           read -r head base < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" --jq '
             select(.state == "open" and .base.ref == "main" and .head.repo.full_name == .base.repo.full_name)
             | "\(.head.sha) \(.base.sha)"')
-          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || exit 1
           if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
             test "$head" = "$EVENT_HEAD"
             test "$base" = "$EVENT_BASE"
@@ -74,11 +74,15 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print(f"revision={revision}", file=output)
           PY
-      - name: Require the requested commit to belong to go-ci main
+      - name: Verify the requested go-ci commit
         env:
           GH_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           SOURCE_SHA: ${{ steps.manifests.outputs.revision }}
+          TRUSTED_REVISION: ${{ inputs.revision }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$SOURCE_SHA" = "$TRUSTED_REVISION" ]; then
+            exit 0
+          fi
           test "$(gh api "repos/fin-assist/go-ci/compare/$SOURCE_SHA...main" --jq .merge_base_commit.sha)" = "$SOURCE_SHA"
       - name: Checkout trusted preparation scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -96,7 +100,7 @@ jobs:
           token: ${{ secrets.GO_MODULES_TOKEN }}
           path: .finassist-ci/requested-source
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.27.x'
           cache: false
@@ -116,7 +120,7 @@ jobs:
           python3 .finassist-ci/trusted-preparation/common/scripts/prefetch_private_modules.py \
             --go-mod "$RUNNER_TEMP/private-ci-input/go.mod" --go-sum "$RUNNER_TEMP/private-ci-input/go.sum" \
             --output "$RUNNER_TEMP/private-ci-output/proxy"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: private-ci-${{ steps.pull.outputs.head }}-${{ steps.pull.outputs.base }}
           path: ${{ runner.temp }}/private-ci-output/

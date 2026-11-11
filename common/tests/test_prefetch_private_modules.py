@@ -120,6 +120,52 @@ class PrivateModulePrefetchTest(unittest.TestCase):
             "Version": VERSION, "Time": "2026-01-02T03:04:05Z",
         })
 
+    def test_combines_historical_locks_and_accepts_missing_sum_without_private_requires(self):
+        old_mod = self.root / "tag.mod"
+        old_sum = self.root / "tag.sum"
+        old_mod.write_text(f"module example.com/app\n\ngo 1.26.0\n\nrequire {MODULE} {OLD_VERSION}\n")
+        old_sum.write_text(LOCKS.replace(VERSION, OLD_VERSION))
+        blank_mod = self.root / "blank.mod"
+        blank_mod.write_text("module example.com/blank\n\ngo 1.26.0\n")
+        real_run = subprocess.run
+
+        def run(command, **options):
+            if command == ["go", "telemetry", "off"] or command[:4] == ["go", "mod", "edit", "-json"]:
+                return real_run(command, **options)
+            return self.fake_download(command, **options)
+
+        with patch.object(subprocess, "run", run):
+            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories={"contracts"},
+                              baselines=((old_mod, old_sum), (blank_mod, self.root / "missing.sum")))
+        self.assertCountEqual(self.downloads, [(MODULE, OLD_VERSION), (MODULE, VERSION)])
+        self.assertTrue((self.output / MODULE / "@v" / f"{OLD_VERSION}.ziphash").is_file())
+
+    def test_version_snapshot_preserves_locked_modfile_and_adds_no_archives(self):
+        candidate = "v0.12.0-RC1"
+        env = {"GOMODCACHE": str(self.root / "cache")}
+        cached = self.root / "cache" / "cache/download" / MODULE / "@v"
+        target = self.output / MODULE / "@v"
+        cached.mkdir(parents=True)
+        target.mkdir(parents=True)
+        (target / f"{VERSION}.mod").write_text("verified modfile")
+        for version in (VERSION, candidate):
+            filename = prefetch.escape_version(version)
+            (cached / f"{filename}.info").write_text(json.dumps({
+                "Version": version, "Time": "2026-01-02T03:04:05Z", "Origin": "private origin detail",
+            }))
+            (cached / f"{filename}.mod").write_text("metadata modfile")
+
+        metadata = {"Path": MODULE, "Version": candidate, "Versions": [VERSION, candidate]}
+        with patch.object(prefetch, "go_json", side_effect=[metadata, {"Path": MODULE, "Version": VERSION}]):
+            prefetch.snapshot_metadata(MODULE, self.root, env, self.output)
+        self.assertEqual((target / "list").read_text(), f"{VERSION}\n{candidate}\n")
+        self.assertEqual((target / f"{VERSION}.mod").read_text(), "verified modfile")
+        self.assertEqual((target / "v0.12.0-!r!c1.mod").read_text(), "metadata modfile")
+        self.assertEqual(json.loads((target.parent / "@latest").read_text()), {
+            "Version": candidate, "Time": "2026-01-02T03:04:05Z",
+        })
+        self.assertFalse(list(target.glob("*.zip")))
+
     def test_checksum_failure_keeps_proxy_unpublished(self):
         self.go_sum.write_text(LOCKS.replace(ZIP_SUM, MOD_SUM))
         real_run = subprocess.run

@@ -1,4 +1,4 @@
-"""Build a Go proxy containing only the locked private dependencies of a PR."""
+"""Prepare checksum-locked private Go files and optional version metadata."""
 
 import argparse
 import base64
@@ -21,6 +21,8 @@ VERSION = re.compile(rf"v{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{PRERELEASE})?(?:\+inco
 CHECKSUM = re.compile(r"h1:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=")
 INPUT_LIMIT = 2 * 1024 * 1024
 PRIVATE_VERSION_LIMIT = 128
+VERSION_LIST_LIMIT = 64
+BASELINE_LIMIT = 2
 DOWNLOAD_TIMEOUT = 120
 
 
@@ -34,6 +36,10 @@ def validate_reference(module, version):
         raise ValueError("invalid private module path")
     if len(version) > 128 or VERSION.fullmatch(version) is None:
         raise ValueError(f"invalid version for private module {module}")
+
+
+def escape_version(version):
+    return re.sub(r"[A-Z]", lambda match: "!" + match.group().lower(), version)
 
 
 def read_input(path):
@@ -87,6 +93,24 @@ def read_locks(go_mod, go_sum):
     return locks
 
 
+def locked_inputs(inputs, work, env):
+    locks = {}
+    for go_mod, go_sum in inputs:
+        input_mod = work / "input.mod"
+        input_mod.write_bytes(read_input(go_mod))
+        parsed = go_json(["mod", "edit", "-json", str(input_mod)], work, env, "parse go.mod")
+        sums = read_input(go_sum).decode("utf-8") if go_sum.exists() or go_sum.is_symlink() else ""
+        for ref, hashes in read_locks(parsed, sums).items():
+            merged = locks.setdefault(ref, {})
+            for kind, checksum in hashes.items():
+                if merged.setdefault(kind, checksum) != checksum:
+                    module, version = ref
+                    raise ValueError(f"conflicting release checksums for {module}@{version}")
+    if len(locks) > PRIVATE_VERSION_LIMIT:
+        raise ValueError("too many locked private module versions")
+    return locks
+
+
 def go_environment(work):
     home = work / "home"
     home.mkdir()
@@ -134,20 +158,61 @@ def download_module(module, version, hashes, work, env, proxy):
     cached = Path(env["GOMODCACHE"]) / "cache" / "download" / package
     target = proxy / package
     target.mkdir(parents=True, exist_ok=True)
-    info = json.loads((cached / f"{version}.info").read_bytes())
+    filename = escape_version(version)
+    info = json.loads((cached / f"{filename}.info").read_bytes())
     if info.get("Version") != version or not isinstance(info.get("Time"), str):
         raise ValueError(f"invalid proxy metadata for {reference}")
     # The Go proxy requires version and time. Origin details stay in the temporary cache.
-    (target / f"{version}.info").write_text(json.dumps({"Version": version, "Time": info["Time"]}), encoding="utf-8")
+    (target / f"{filename}.info").write_text(json.dumps({"Version": version, "Time": info["Time"]}), encoding="utf-8")
     for suffix in hashes:
-        shutil.copyfile(cached / f"{version}.{suffix}", target / f"{version}.{suffix}")
+        shutil.copyfile(cached / f"{filename}.{suffix}", target / f"{filename}.{suffix}")
     if "zip" in hashes:
-        (target / f"{version}.ziphash").write_text(hashes["zip"], encoding="ascii")
+        (target / f"{filename}.ziphash").write_text(hashes["zip"], encoding="ascii")
 
 
-def prefetch(go_mod, go_sum, output, token, *, allowed_repositories):
+def snapshot_metadata(module, work, env, proxy):
+    """Expose Git version metadata to gorelease without adding unlocked archives."""
+    query = ["list", "-m", "-json", "-retracted"]
+    latest = go_json([*query, "-versions", module + "@latest"], work, env, f"list versions of {module}")
+    version = latest.get("Version", "")
+    if latest.get("Path") != module or not isinstance(version, str):
+        raise ValueError(f"unexpected latest version metadata for {module}")
+    validate_reference(module, version)
+    versions = latest.get("Versions") or []
+    if not isinstance(versions, list) or len(versions) > VERSION_LIST_LIMIT:
+        raise ValueError(f"invalid version list for {module}")
+    for listed in versions:
+        if not isinstance(listed, str):
+            raise ValueError(f"invalid version list for {module}")
+        validate_reference(module, listed)
+
+    root = proxy / module
+    target = root / "@v"
+    cached = Path(env["GOMODCACHE"]) / "cache" / "download" / module / "@v"
+    for selected in sorted(set(versions) | {version}):
+        if selected != version:
+            data = go_json([*query, f"{module}@{selected}"], work, env, f"read version metadata for {module}@{selected}")
+            if data.get("Path") != module or data.get("Version") != selected:
+                raise ValueError(f"unexpected version metadata for {module}@{selected}")
+        filename = escape_version(selected)
+        info = json.loads(read_input(cached / f"{filename}.info"))
+        if info.get("Version") != selected or not isinstance(info.get("Time"), str):
+            raise ValueError(f"invalid version metadata for {module}@{selected}")
+        (target / f"{filename}.info").write_text(json.dumps({"Version": selected, "Time": info["Time"]}),
+                                                encoding="utf-8")
+        # Keep the exact modfile already checked against any known lock.
+        target_mod = target / f"{filename}.mod"
+        if not target_mod.exists():
+            target_mod.write_bytes(read_input(cached / f"{filename}.mod"))
+    (target / "list").write_text("".join(item + "\n" for item in versions), encoding="ascii")
+    (root / "@latest").write_bytes((target / f"{escape_version(version)}.info").read_bytes())
+
+
+def prefetch(go_mod, go_sum, output, token, *, allowed_repositories, baselines=(), include_metadata=False):
     if any(REPOSITORY.fullmatch(repo) is None for repo in allowed_repositories):
         raise ValueError("invalid repository in the private module allowlist")
+    if len(baselines) > BASELINE_LIMIT:
+        raise ValueError("too many baseline releases")
     if output.exists() or output.is_symlink():
         raise ValueError("proxy output must not already exist")
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".module-prefetch-") as directory:
@@ -158,10 +223,7 @@ def prefetch(go_mod, go_sum, output, token, *, allowed_repositories):
                            capture_output=True, check=True, timeout=DOWNLOAD_TIMEOUT)
         except (OSError, subprocess.SubprocessError):
             raise ValueError("could not disable Go telemetry in the temporary home") from None
-        input_mod = work / "input.mod"
-        input_mod.write_bytes(read_input(go_mod))
-        parsed_mod = go_json(["mod", "edit", "-json", str(input_mod)], work, env, "parse go.mod")
-        locks = read_locks(parsed_mod, read_input(go_sum).decode("utf-8"))
+        locks = locked_inputs(((go_mod, go_sum), *baselines), work, env)
         repositories = {module.split("/")[2] for module, _ in locks}
         blocked = repositories - allowed_repositories
         if blocked:
@@ -182,6 +244,9 @@ def prefetch(go_mod, go_sum, output, token, *, allowed_repositories):
             }
             for (module, version), hashes in sorted(locks.items()):
                 download_module(module, version, hashes, work, download_env, proxy)
+            if include_metadata:
+                for module in sorted({module for module, _ in locks}):
+                    snapshot_metadata(module, work, download_env, proxy)
         proxy.rename(output)
 
 
@@ -191,10 +256,13 @@ def main():
     parser.add_argument("--go-sum", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--allowed-repositories", required=True)
+    parser.add_argument("--baseline", nargs=2, action="append", default=[], type=Path, metavar=("GO_MOD", "GO_SUM"))
+    parser.add_argument("--include-metadata", action="store_true")
     args = parser.parse_args()
     try:
         prefetch(args.go_mod, args.go_sum, args.output.absolute(), os.environ.get("GO_MODULES_TOKEN"),
-                 allowed_repositories=set(args.allowed_repositories.split()))
+                 allowed_repositories=set(args.allowed_repositories.split()), baselines=args.baseline,
+                 include_metadata=args.include_metadata)
     except (OSError, ValueError) as error:
         parser.exit(1, f"private module prefetch failed: {error}\n")
 

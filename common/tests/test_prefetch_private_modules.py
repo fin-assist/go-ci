@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 
 spec = importlib.util.spec_from_file_location(
@@ -177,6 +178,47 @@ class PrivateModulePrefetchTest(unittest.TestCase):
         with patch.object(prefetch, "go_json", side_effect=[metadata, failed_lookup]):
             with self.assertRaisesRegex(ValueError, "unexpected latest version metadata"):
                 prefetch.snapshot_metadata(MODULE, self.root, env, self.output)
+
+    def test_follows_verified_archives_and_checks_allowlist_before_each_download(self):
+        middle = 'github.com/fin-assist/go-grpc'
+        leaf = 'github.com/fin-assist/go-migrate'
+        downloads = []
+
+        def verified_download(module, version, hashes, work, env, proxy):
+            downloads.append((module, set(hashes)))
+            target = proxy / module / '@v'
+            target.mkdir(parents=True, exist_ok=True)
+            dependencies = {MODULE: middle, middle: leaf}
+            required = dependencies.get(module)
+            mod = f'module {module}\n\ngo 1.26.0\n'
+            if required:
+                mod += f'require {required} {VERSION}\n'
+            (target / f'{version}.mod').write_text(mod)
+            if 'zip' in hashes:
+                with ZipFile(target / f'{version}.zip', 'w') as archive:
+                    if required:
+                        lock = f'{required} {VERSION}/go.mod {MOD_SUM}\n'
+                        if required == middle:
+                            lock += f'{required} {VERSION} {ZIP_SUM}\n'
+                        archive.writestr(f'{module}@{version}/go.sum', lock)
+
+        for allowed in ({'contracts', 'go-grpc'}, {'contracts', 'go-grpc', 'go-migrate'}):
+            with self.subTest(allowed=allowed), tempfile.TemporaryDirectory(dir=self.root) as work_dir:
+                downloads.clear()
+                work = Path(work_dir)
+                proxy = work / 'proxy'
+                env = prefetch.go_environment(work)
+                locks = {(MODULE, VERSION): {'mod': MOD_SUM, 'zip': ZIP_SUM}}
+                with patch.object(prefetch, 'download_module', side_effect=verified_download):
+                    if 'go-migrate' not in allowed:
+                        with self.assertRaisesRegex(ValueError, 'reviewed access boundary: go-migrate'):
+                            prefetch.download_locked_graph(locks, work, env, env, proxy, allowed, transitive=True)
+                    else:
+                        prefetch.download_locked_graph(locks, work, env, env, proxy, allowed, transitive=True)
+                expected = [(MODULE, {'mod', 'zip'}), (middle, {'mod', 'zip'})]
+                if 'go-migrate' in allowed:
+                    expected.append((leaf, {'mod'}))
+                self.assertEqual(downloads, expected)
 
     def test_checksum_failure_keeps_proxy_unpublished(self):
         self.go_sum.write_text(LOCKS.replace(ZIP_SUM, MOD_SUM))

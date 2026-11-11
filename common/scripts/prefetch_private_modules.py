@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from zipfile import BadZipFile, ZipFile
 
 
 PRIVATE_ROOT = "github.com/fin-assist"
@@ -51,7 +53,7 @@ def read_input(path):
     return data
 
 
-def read_locks(go_mod, go_sum):
+def read_locks(go_mod, go_sum, *, required_only=False):
     required = set()
     for requirement in go_mod.get("Require") or []:
         module = requirement["Path"]
@@ -84,12 +86,28 @@ def read_locks(go_mod, go_sum):
     if len(locks) > PRIVATE_VERSION_LIMIT:
         raise ValueError("too many locked private module versions")
     for module, version in required:
-        if locks.get((module, version), {}).keys() != {"mod", "zip"}:
+        expected = {"mod"} if required_only else {"mod", "zip"}
+        if not expected.issubset(locks.get((module, version), {})):
             raise ValueError(f"missing required module checksums for {module}@{version}")
     for (module, version), hashes in locks.items():
         if "mod" not in hashes:
             raise ValueError(f"missing go.mod checksum for {module}@{version}")
-    return locks
+    return {ref: locks[ref] for ref in required} if required_only else locks
+
+
+def merge_locks(target, extra):
+    changed = []
+    for ref, hashes in sorted(extra.items()):
+        merged = target.setdefault(ref, {})
+        if set(hashes) - set(merged):
+            changed.append(ref)
+        for kind, checksum in hashes.items():
+            if merged.setdefault(kind, checksum) != checksum:
+                module, version = ref
+                raise ValueError(f"conflicting release checksums for {module}@{version}")
+    if len(target) > PRIVATE_VERSION_LIMIT:
+        raise ValueError("too many locked private module versions")
+    return changed
 
 
 def locked_inputs(inputs, work, env):
@@ -99,14 +117,7 @@ def locked_inputs(inputs, work, env):
         input_mod.write_bytes(read_input(go_mod))
         parsed = go_json(["mod", "edit", "-json", str(input_mod)], work, env, "parse go.mod")
         sums = read_input(go_sum).decode("utf-8") if go_sum.exists() or go_sum.is_symlink() else ""
-        for ref, hashes in read_locks(parsed, sums).items():
-            merged = locks.setdefault(ref, {})
-            for kind, checksum in hashes.items():
-                if merged.setdefault(kind, checksum) != checksum:
-                    module, version = ref
-                    raise ValueError(f"conflicting release checksums for {module}@{version}")
-    if len(locks) > PRIVATE_VERSION_LIMIT:
-        raise ValueError("too many locked private module versions")
+        merge_locks(locks, read_locks(parsed, sums))
     return locks
 
 
@@ -167,6 +178,52 @@ def download_module(module, version, hashes, work, env, proxy):
         shutil.copyfile(cached / f"{filename}.{suffix}", target / f"{filename}.{suffix}")
     if "zip" in hashes:
         (target / f"{filename}.ziphash").write_text(hashes["zip"], encoding="ascii")
+
+
+def archived_requirements(module, version, work, env, proxy):
+    """Read dependency locks as data from an already checksum-verified module."""
+    target = proxy / module / "@v"
+    filename = escape_version(version)
+    go_mod = target / f"{filename}.mod"
+    parsed = go_json(["mod", "edit", "-json", str(go_mod)], work, env, f"read go.mod of {module}@{version}")
+    archive_path = target / f"{filename}.zip"
+    try:
+        with ZipFile(archive_path) as archive:
+            try:
+                with archive.open(f"{module}@{version}/go.sum") as sums:
+                    content = sums.read(INPUT_LIMIT + 1)
+            except KeyError:
+                content = b""
+    except BadZipFile:
+        raise ValueError(f"could not read the verified module archive for {module}@{version}") from None
+    if len(content) > INPUT_LIMIT:
+        raise ValueError(f"go.sum in {module}@{version} exceeds the size limit")
+    # A dependency's replace directives do not apply to its importers.
+    parsed.pop("Replace", None)
+    return read_locks(parsed, content.decode("utf-8"), required_only=True)
+
+
+def require_allowed(locks, allowed_repositories):
+    blocked = {module.split("/")[2] for module, _ in locks} - allowed_repositories
+    if blocked:
+        raise ValueError("private module repositories outside the reviewed access boundary: " + ", ".join(sorted(blocked)))
+
+
+def download_locked_graph(locks, work, env, download_env, proxy, allowed_repositories, *, transitive):
+    pending = deque(sorted(locks))
+    downloaded = {}
+    while pending:
+        ref = pending.popleft()
+        hashes = locks[ref]
+        if hashes == downloaded.get(ref):
+            continue
+        module, version = ref
+        download_module(module, version, hashes, work, download_env, proxy)
+        downloaded[ref] = hashes.copy()
+        if transitive and "zip" in hashes:
+            requirements = archived_requirements(module, version, work, env, proxy)
+            require_allowed(requirements, allowed_repositories)
+            pending.extend(merge_locks(locks, requirements))
 
 
 def snapshot_metadata(module, work, env, proxy):
@@ -233,10 +290,7 @@ def prefetch(go_mod, go_sum, output, token, *, allowed_repositories, baselines=(
         except (OSError, subprocess.SubprocessError):
             raise ValueError("could not disable Go telemetry in the temporary home") from None
         locks = locked_inputs(((go_mod, go_sum), *baselines), work, env)
-        repositories = {module.split("/")[2] for module, _ in locks}
-        blocked = repositories - allowed_repositories
-        if blocked:
-            raise ValueError("private module repositories outside the reviewed access boundary: " + ", ".join(sorted(blocked)))
+        require_allowed(locks, allowed_repositories)
         if locks and not token:
             raise ValueError("GO_MODULES_TOKEN is required to fetch private modules")
 
@@ -251,8 +305,8 @@ def prefetch(go_mod, go_sum, output, token, *, allowed_repositories, baselines=(
                 "GIT_CONFIG_KEY_1": "http.followRedirects",
                 "GIT_CONFIG_VALUE_1": "false",
             }
-            for (module, version), hashes in sorted(locks.items()):
-                download_module(module, version, hashes, work, download_env, proxy)
+            download_locked_graph(locks, work, env, download_env, proxy, allowed_repositories,
+                                  transitive=include_metadata)
             if include_metadata:
                 for module in sorted({module for module, _ in locks}):
                     snapshot_metadata(module, work, download_env, proxy)

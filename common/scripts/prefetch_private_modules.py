@@ -221,9 +221,12 @@ def download_locked_graph(locks, work, env, download_env, proxy, allowed_reposit
         download_module(module, version, hashes, work, download_env, proxy)
         downloaded[ref] = hashes.copy()
         if transitive and "zip" in hashes:
-            requirements = archived_requirements(module, version, work, env, proxy)
-            require_allowed(requirements, allowed_repositories)
-            pending.extend(merge_locks(locks, requirements))
+            try:
+                requirements = archived_requirements(module, version, work, env, proxy)
+                require_allowed(requirements, allowed_repositories)
+                pending.extend(merge_locks(locks, requirements))
+            except ValueError as error:
+                raise ValueError(f"private requirements from {module}@{version}: {error}") from None
 
 
 def snapshot_metadata(module, work, env, proxy):

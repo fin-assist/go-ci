@@ -211,7 +211,7 @@ class PrivateModulePrefetchTest(unittest.TestCase):
                 locks = {(MODULE, VERSION): {'mod': MOD_SUM, 'zip': ZIP_SUM}}
                 with patch.object(prefetch, 'download_module', side_effect=verified_download):
                     if 'go-migrate' not in allowed:
-                        with self.assertRaisesRegex(ValueError, 'reviewed access boundary: go-migrate'):
+                        with self.assertRaisesRegex(ValueError, r'from .*go-grpc@.*reviewed access boundary: go-migrate'):
                             prefetch.download_locked_graph(locks, work, env, env, proxy, allowed, transitive=True)
                     else:
                         prefetch.download_locked_graph(locks, work, env, env, proxy, allowed, transitive=True)
@@ -219,6 +219,41 @@ class PrivateModulePrefetchTest(unittest.TestCase):
                 if 'go-migrate' in allowed:
                     expected.append((leaf, {'mod'}))
                 self.assertEqual(downloads, expected)
+
+    def test_merge_locks_requeues_a_version_when_zip_checksum_arrives(self):
+        ref = (MODULE, VERSION)
+        locks = {ref: {'mod': MOD_SUM}}
+        complete = {ref: {'mod': MOD_SUM, 'zip': ZIP_SUM}}
+        self.assertEqual(prefetch.merge_locks(locks, complete), [ref])
+        self.assertEqual(locks, complete)
+        self.assertEqual(prefetch.merge_locks(locks, complete), [])
+        with self.assertRaisesRegex(ValueError, 'conflicting release checksums'):
+            prefetch.merge_locks(locks, {ref: {'mod': ZIP_SUM}})
+
+    def test_archive_requires_valid_lockfile_but_ignores_dependency_replace(self):
+        source = self.output / MODULE / '@v'
+        source.mkdir(parents=True)
+        required = 'github.com/fin-assist/go-migrate'
+        (source / f'{VERSION}.mod').write_text(
+            f'module {MODULE}\n\ngo 1.26.0\n\nrequire {required} {VERSION}\nreplace {required} => ./local\n')
+        archive_path = source / f'{VERSION}.zip'
+        env = prefetch.go_environment(self.root)
+
+        def requirements():
+            return prefetch.archived_requirements(MODULE, VERSION, self.root, env, self.output)
+
+        archive_path.write_text('invalid archive')
+        with self.assertRaisesRegex(ValueError, 'could not read the verified module archive'):
+            requirements()
+        with ZipFile(archive_path, 'w'):
+            pass
+        with self.assertRaisesRegex(ValueError, 'missing required module checksums'):
+            requirements()
+        with ZipFile(archive_path, 'w') as archive:
+            archive.writestr(f'{MODULE}@{VERSION}/go.sum', f'{required} {VERSION}/go.mod {MOD_SUM}\n')
+        with patch.object(prefetch, 'INPUT_LIMIT', 32), self.assertRaisesRegex(ValueError, 'exceeds the size limit'):
+            requirements()
+        self.assertEqual(requirements(), {(required, VERSION): {'mod': MOD_SUM}})
 
     def test_checksum_failure_keeps_proxy_unpublished(self):
         self.go_sum.write_text(LOCKS.replace(ZIP_SUM, MOD_SUM))

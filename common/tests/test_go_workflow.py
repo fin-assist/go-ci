@@ -192,6 +192,9 @@ if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
     assert os.environ['GONOSUMDB'] == 'github.com/fin-assist/*'
 else:
     expected = 'Authorization: Basic ' + base64.b64encode(b'x-access-token:trusted-fixture').decode()
+    keys = [os.environ[f'GIT_CONFIG_KEY_{i}'] for i in range(int(os.environ['GIT_CONFIG_COUNT']))]
+    assert keys == [f'http.{origin}.extraHeader', f'http.{origin}.git.extraHeader',
+                    'http.followRedirects', 'http.https://github.com/fin-assist/.extraHeader']
     assert git_header(contracts) == expected
     assert git_header(neighbor) == expected
 report = os.environ.get('FIXTURE_REPORT')
@@ -203,8 +206,10 @@ if report is not None:
                    'GOPRIVATE': 'github.com/fin-assist/*', 'MODULES_TOKEN': '',
                    'RUNNER_TEMP': directory, 'SHARED_REVISION': revision}
 
-            def check(report='# summary\n', **options):
+            def check(report='# summary\n', *, stale_report=False, **options):
                 (root / 'gorelease.txt').unlink(missing_ok=True)
+                if stale_report:
+                    (root / 'gorelease.txt').write_text('# summary\nold report\n')
                 test_env = env | options
                 if report is not None:
                     test_env['FIXTURE_REPORT'] = report
@@ -220,6 +225,8 @@ if report is not None:
                     result = check(report)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('did not produce a complete compatibility report', result.stderr)
+            self.assertIn('did not produce a complete compatibility report',
+                          check(None, stale_report=True).stderr)
             git('tag', 'v1.3.0')
             self.assertIn('Release tags changed after preparation', check().stderr)
             git('tag', '-d', 'v1.3.0')
@@ -227,6 +234,8 @@ if report is not None:
             self.assertIn('Release tags changed after preparation', check().stderr)
             baselines.unlink()
             self.assertIn('were not prepared', check().stderr)
+            git('remote', 'set-url', 'origin', 'https://github.com/fin-assist/go-identity-other.git')
+            self.assertIn('Unexpected repository origin', check().stderr)
 
     def test_lint_and_migrations_execute_pin_and_manifest_validation(self):
         for name in ['shared-lint.yml', 'shared-migrations.yml']:

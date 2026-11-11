@@ -140,6 +140,7 @@ jobs:
             unset auth
           fi
           unset MODULES_TOKEN
+          rm -f gorelease.txt
           python3 scripts/api_check.py
           # Published development may have compatibility diagnostics, but the analyzer
           # must still have loaded both module graphs and produced its summary.

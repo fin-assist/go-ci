@@ -4,6 +4,8 @@ import re
 
 RECOVERY_DESCRIPTION = 'FIN-211: recovery of an automatically failed dependency family'
 QUARANTINE_DESCRIPTION = 'FIN-211: failed twice; retry explicitly in Dependency Dashboard'
+SECURITY_QUARANTINE_DESCRIPTION = 'FIN-504: security update failed twice'
+SECURITY_MATCH = 'isVulnerabilityAlert = true'
 NO_DIGEST = '$not($exists(newDigest)) or newDigest = null'
 HAS_DIGEST = '$exists(newDigest) and newDigest != null'
 COMMON_KEYS = {'description', 'matchPackageNames', 'matchDatasources', 'recreateWhen'}
@@ -92,6 +94,23 @@ def validate_policy(value):
         if not _one_literal(rule.get('matchDatasources'), r'[a-z][a-z0-9-]*', 128):
             _reject(f'rule {index} datasource must be one literal')
         description = rule.get('description')
+        if description == SECURITY_QUARANTINE_DESCRIPTION:
+            expressions = rule.get('matchJsonata')
+            keys = {'description', 'matchPackageNames', 'matchDatasources', 'matchJsonata', 'enabled'}
+            suffix = ') and ' + SECURITY_MATCH
+            if (not isinstance(expressions, list) or len(expressions) != 1
+                    or not isinstance(expressions[0], str)
+                    or not expressions[0].startswith('(') or not expressions[0].endswith(suffix)):
+                _reject(f'rule {index} must be scoped to security updates')
+            exact = expressions[0][1:-len(suffix)]
+            if 'matchNewValue' in rule:
+                keys.add('matchNewValue')
+                matcher_valid = _exact_value_regex(rule['matchNewValue']) and exact == NO_DIGEST
+            else:
+                matcher_valid = _digest_expression([exact])
+            if set(rule) != keys or rule['enabled'] is not False or not matcher_valid:
+                _reject(f'rule {index} must disable one exact security version or digest')
+            continue
         if description == RECOVERY_DESCRIPTION:
             keys = COMMON_KEYS
             if rule.get('recreateWhen') != 'always':

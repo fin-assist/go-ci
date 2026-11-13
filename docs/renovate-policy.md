@@ -34,9 +34,15 @@ PR body. `updates()` нормализует packageName. Go toolchain guard пр
 
 ## Цель и конфигурационная ветка
 
-Единственная цель — самая новая `release/X.Y.Z`, для которой ещё нет одновременно смёрженного
-PR из того же репозитория в `main` и подтверждённой предковости. При отсутствии активной release —
-`main`. Только что созданная от main ветка остаётся активной до release merge PR.
+Единственная цель всех PR Renovate — `main`. Раз в неделю, в понедельник 00:00–09:00 по
+Москве, обычные обновления собираются в общий PR. Major и согласованные специальные
+группы используют то же окно. Security-обновления приходят вне окна.
+Контроллер реагирует на CI PR Renovate. Резервная сверка выполняется каждые две недели:
+GitHub вызывает лёгкий gate по понедельникам, сверка проходит через неделю по календарю UTC в 09:17 МСК после окна. GitHub ставит
+одновременные события в очередь, сохраняя последовательность сверок.
+Строгая защита `main` может потребовать повторного CI после мержа соседнего PR. Обычный
+PR, который не успел обновить ветку в недельном окне, ждёт следующего окна. Проверяем
+эту задержку на пилоте.
 Цель и PR head/commit/CI повторно проверяются перед действием. Конфликтующий либо ещё не рассчитанный mergeability PR остаётся владельцу до claim, quarantine и close; свежая mergeability повторно проверяется перед действием. Red CI со state blocked не считается конфликтом.
 Смена ветки между последним
 чтением и merge не атомарна: общей API-транзакции GitHub для этого нет.
@@ -44,9 +50,9 @@ PR из того же репозитория в `main` и подтверждён
 `renovate.json` подключает только собственные presets в порядке baseline → generated policy:
 `local>fin-assist/go-ci:base#renovate-policy` и `local>fin-assist/go-ci:policy#renovate-policy`.
 В config-only ветке находятся только `base.json`, `policy.json` и `state.json`, без workflows/кода.
-`base.json` копируется из рассмотренного `renovate-base.json` выбранной цели по commit SHA как JSON.
-Если активная цель baseline не содержит, контроллер останавливается до записей.
-Generated policy принимает только один target и строго ограниченные generated recovery/quarantine
+`base.json` копируется из рассмотренного `renovate-base.json` `main` по commit SHA как JSON.
+Если `main` не содержит baseline, контроллер останавливается до записей.
+Контроллер мигрирует прежний literal `release/X.Y.Z` в `main`. Generated policy принимает только один target и строго ограниченные generated recovery/quarantine
 rule shapes. Произвольные matcher/JSONata, native automerge и посторонние поля отклоняются.
 
 Защиты `main` и `release/*`: strict required checks от GitHub Actions App15368 (runtime проверяет каждую привязку и отсутствие дубликатов),
@@ -77,6 +83,9 @@ scoped recovery действует только на зависимость+data
 Остальные зависимости/major сохраняют обычную семантику ignored. Для повтора неудачного значения
 владелец отмечает Pending Approval/Closed в Dependency Dashboard. Повторный failure новой попытки
 создаёт новую generation approval. Exact failed значения не пересоздаются бесконечно.
+Security-алерты Renovate принудительно пропускают Dashboard approval. Для них generated preset
+отключает точную версию или digest после повторного падения отдельного security-PR.
+Для ручного повтора владелец удаляет соответствующее правило FIN-504 из защищённого preset.
 
 Recovery допускает повторное появление **вручную закрытого** обновления той же dependency family.
 Чтобы окончательно отклонить family, владелец удаляет соответствующее recovery rule reviewable правкой;

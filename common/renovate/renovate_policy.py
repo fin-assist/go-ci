@@ -16,11 +16,13 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from renovate_policy_data import COMPOSE_PACKAGES, NO_DIGEST, HAS_DIGEST
+from renovate_policy_data import (COMPOSE_PACKAGES, NO_DIGEST, HAS_DIGEST,
+                                  QUARANTINE_DESCRIPTION, SECURITY_QUARANTINE_DESCRIPTION, SECURITY_MATCH)
 
 BOT_ID = 29139614
 BOT = 'renovate[bot]'
 POLICY_BRANCH = 'renovate-policy'
+TARGET_BRANCH = 'main'
 MARKER = '<!-- fin211-state '
 UPDATES = '<!-- fin211-updates '
 COMPACT_UPDATE = '<!-- fin211-update '
@@ -38,19 +40,6 @@ def read_caller_data(root, relative):
         current = current.parent
     return path.read_text()
 METADATA_TEMPLATE = '{{#each upgrades}}' + PER_UPDATE_NOTE + '\n{{/each}}'
-
-
-def selected_base(branches, merged, ancestor):
-    """A release is retired only when BOTH the merge PR and ancestry prove it."""
-    versions = []
-    for name in branches:
-        match = re.fullmatch(r'release/(\d+)\.(\d+)\.(\d+)', name)
-        if match:
-            versions.append((tuple(map(int, match.groups())), name))
-    for _, name in sorted(versions, reverse=True):
-        if not ((merged(name) if callable(merged) else name in merged) and ancestor(name)):
-            return name
-    return 'main'
 
 
 def updates(body):
@@ -128,7 +117,7 @@ def quarantine_rules(items, generation):
     rules = []
     for item in items:
         rule = {
-            'description': 'FIN-211: failed twice; retry explicitly in Dependency Dashboard',
+            'description': QUARANTINE_DESCRIPTION,
             'matchPackageNames': [item['depName']],
             'matchDatasources': [item['datasource']],
             'dependencyDashboardApproval': True,
@@ -145,6 +134,20 @@ def quarantine_rules(items, generation):
         rules.append(rule)
     return rules
 
+
+
+def security_quarantine_rules(rules):
+    """Security alerts force approval off; disable only the exact failed value."""
+    blocked = []
+    for rule in rules:
+        if rule.get('description') != QUARANTINE_DESCRIPTION:
+            continue
+        entry = {key: value for key, value in rule.items()
+                 if key in ('matchPackageNames', 'matchDatasources', 'matchNewValue')}
+        entry.update(description=SECURITY_QUARANTINE_DESCRIPTION, enabled=False,
+                     matchJsonata=[f"({rule['matchJsonata'][0]}) and {SECURITY_MATCH}"])
+        blocked.append(entry)
+    return blocked
 
 
 def recovery_rules(items, generation):
@@ -242,20 +245,6 @@ class GitHub:
                 return result
         raise ValueError('Pagination limit exceeded; refusing partial evidence')
 
-    def base(self):
-        branches = [x['name'] for x in self.pages('branches')]
-        def merged(branch):
-            head = urllib.parse.quote(self.repo.split('/')[0] + ':' + branch, safe='')
-            return any(item.get('merged_at') and item['head']['ref'] == branch
-                       and (item['head'].get('repo') or {}).get('full_name') == self.repo
-                       for item in self.pages('pulls?state=closed&base=main&head=' + head))
-        def ancestor(branch):
-            # compare(base=release, head=main) behind/ahead semantics: release ancestor
-            # iff there are zero commits exclusive to release (behind_by == 0).
-            value = self.get('compare/' + urllib.parse.quote(branch, safe='') + '...main')
-            return value['behind_by'] == 0
-        return selected_base(branches, merged, ancestor)
-
     def sync_baseline(self, base):
         # Read approved JSON from a pinned target commit, never execute target code.
         branch = self.get('branches/' + urllib.parse.quote(base, safe=''))
@@ -309,7 +298,7 @@ class GitHub:
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
-        policy = {'baseBranchPatterns': [self.base()], 'packageRules': []}
+        policy = {'baseBranchPatterns': [TARGET_BRANCH], 'packageRules': []}
         tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}, {'path': 'base.json', 'mode': '100644', 'type': 'blob', 'content': read_caller_data(self.root, 'renovate-base.json')}, {'path': 'state.json', 'mode': '100644', 'type': 'blob', 'content': '{}\n'}]})
         commit = self.request('POST', 'git/commits', {'message': 'Initialize generated Renovate policy', 'tree': tree['sha'], 'parents': []})
         self.request('POST', 'git/refs', {'ref': 'refs/heads/' + POLICY_BRANCH, 'sha': commit['sha']})
@@ -402,7 +391,7 @@ class GitHub:
         pr = self.get(f'pulls/{number}')
         commits = self.signed_commits(number)
         if (not trusted(pr, commits, self.repo) or not conflict_free(pr)
-                or pr['head']['sha'] != sha or pr['base']['ref'] != base or self.base() != base):
+                or pr['head']['sha'] != sha or pr['base']['ref'] != base or base != TARGET_BRANCH):
             return None
         if runs:
             current = self.current_runs(pr, runs)
@@ -595,7 +584,7 @@ def reconcile(api, config, trigger=None):
     api.controller_login = config['controllerLogin']
     if not api.policy_protected(config['controllerLogin']):
         raise ValueError('Generated preset branch must restrict pushes to the controller identity, with admins enforced and force/delete disabled')
-    base = api.base()
+    base = TARGET_BRANCH
     policy, policy_sha = api.read_policy()
     if not api.protection(base, config['requiredChecks']):
         raise ValueError('Target branch must enforce required CI and administrator protection before preset sync')
@@ -627,7 +616,8 @@ def reconcile_pr(api, config, base, candidate, trigger):
     sha = pr['head']['sha']
     try:
         head = next((commit for commit in commits if commit.get('sha') == sha), None)
-        items = updates(head.get('commit', {}).get('message')) if head else []
+        message = head.get('commit', {}).get('message') if head else None
+        items = updates(message)
     except (ValueError, TypeError):
         print(f'PR {number}: invalid metadata; owner review required')
         return
@@ -740,6 +730,11 @@ def reconcile_pr(api, config, base, candidate, trigger):
         ordinary_items = [item for item in items if not (stack_failed and compose_stack_member(item))]
         recovery = recovery_rules(ordinary_items, number)
         new_rules = quarantine_rules(ordinary_items, number)
+        # The signed commit and the bot-owned branch both identify the alert.
+        subject = message.splitlines()[0]
+        security = subject.lower().endswith(' [security]') and pr['head']['ref'].endswith('-vulnerability')
+        if security:
+            new_rules.extend(security_quarantine_rules(quarantine_rules(items, number)))
         if stack_failed:
             new_rules.append(compose_stack_rule(number))
         policy, policy_sha = api.read_policy()
@@ -771,6 +766,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
                 + 'CI повторно упал на SHA `' + sha + '`. Попытки: ' + ', '.join(name + '=' + str(value['run_attempt']) for name, value in runs.items()) + '.\n' + failed
                 + '\nПовторное падение подтверждено; запрошено автоматическое закрытие. Контроллер ветку не удаляет. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
                 + ('Стек FIN-184 остаётся одной видимой Pending Approval группой: будущие версии требуют совместного Dashboard approval и ручной UI-проверки. ' if stack_failed else 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; та же версия требует явного подтверждения. ')
+                + ('Для повтора security-обновления владелец снимает точную блокировку в preset. ' if security else '')
                 + 'См. docs/renovate-policy.md.')
         # A collaborator may edit/delete comments; neither changes the receipt.
         comment_id = receipt.get('comment_id')

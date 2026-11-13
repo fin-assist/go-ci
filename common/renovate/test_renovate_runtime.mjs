@@ -76,9 +76,9 @@ function dependency(name, value, old = '3.0.0', type = 'major') {
 function productionRules(builder, items, generation = 123) {
   // Exercise both production builders, never an imitation of policy logic.
   const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
-  const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(getattr(m,sys.argv[4])(json.loads(sys.argv[2]),int(sys.argv[3]))))";
+  const code = "import importlib.util,json,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent)); s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); args=[json.loads(sys.argv[2])]; args.extend([int(sys.argv[3])] if sys.argv[3] else []); print(json.dumps(getattr(m,sys.argv[4])(*args)))";
   return JSON.parse(execFileSync('python3', ['-B', '-c', code, controller,
-    JSON.stringify(items), String(generation), builder], {encoding:'utf8',timeout:5000}));
+    JSON.stringify(items), generation === null ? '' : String(generation), builder], {encoding:'utf8',timeout:5000}));
 }
 function update(name, value) {
   return {depName:name,newValue:value,datasource:'npm',newMajor:Number(value.split('.')[0])};
@@ -111,6 +111,26 @@ async function explicitApproval(branch, cfg) {
   return gate(branch, dashboardConfig.dependencyDashboardChecks);
 }
 const passed = 'passed-approval-boundary';
+
+// Renovate's GitHub alert rules force Dashboard approval off. The exact
+// failed security value must still disappear before branch creation.
+const securityOptions = getConfig().vulnerabilityAlerts;
+const failedSecurity = update('security-fixture', '4.0.0');
+const exactQuarantine = productionRules('quarantine_rules', [failedSecurity]);
+const securityBlock = productionRules('security_quarantine_rules', exactQuarantine, null);
+const alertRule = {matchPackageNames: [failedSecurity.depName], isVulnerabilityAlert: true,
+  force: securityOptions};
+const alertDep = () => dependency(failedSecurity.depName, '4.0.0');
+const [oldSecurityBranch] = await branches(config([...exactQuarantine, alertRule]), [alertDep()]);
+assert.equal(oldSecurityBranch.dependencyDashboardApproval, false);
+const blockedSecurity = config([...exactQuarantine, ...securityBlock, alertRule]);
+assert.deepEqual(await branches(blockedSecurity, [alertDep()]), []);
+const [newSecurityBranch] = await branches(blockedSecurity, [dependency(failedSecurity.depName, '4.0.1')]);
+assert.equal(newSecurityBranch.isVulnerabilityAlert, true);
+assert.equal(newSecurityBranch.dependencyDashboardApproval, false);
+const [ordinaryFailedVersion] = await branches(config([...exactQuarantine, ...securityBlock]), [alertDep()]);
+assert.equal(ordinaryFailedVersion.dependencyDashboardApproval, true);
+console.log('PASS: exact failed security value is suppressed while newer security and ordinary approval remain available');
 
 // Only an automatically failed dependency family may recreate its closed PR cache key.
 const failedItem = update('a','4.0.0');

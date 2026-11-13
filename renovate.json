@@ -9,5 +9,13 @@
   "prBodyNotes": [
     "<!-- fin211-update {{{encodeBase64 (toJSON (toObject 'depName' depName 'packageName' packageName 'newValue' newValue 'datasource' datasource 'newDigest' newDigest 'newMajor' newMajor))}}} -->"
   ],
-  "commitBody": "{{#each upgrades}}<!-- fin211-update {{{encodeBase64 (toJSON (toObject 'depName' depName 'packageName' packageName 'newValue' newValue 'datasource' datasource 'newDigest' newDigest 'newMajor' newMajor))}}} -->\n{{/each}}"
+  "commitBody": "{{#each upgrades}}<!-- fin211-update {{{encodeBase64 (toJSON (toObject 'depName' depName 'packageName' packageName 'newValue' newValue 'datasource' datasource 'newDigest' newDigest 'newMajor' newMajor))}}} -->\n{{/each}}",
+  "timezone": "Europe/Moscow",
+  "schedule": [
+    "* 0-8 * * 1"
+  ],
+  "updateNotScheduled": false,
+  "baseBranchPatterns": [
+    "main"
+  ]
 }

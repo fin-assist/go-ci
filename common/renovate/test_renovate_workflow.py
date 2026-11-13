@@ -1,5 +1,6 @@
 from paths import consumer_root, consumer_repository
 """Execute the workflow's real activation gate before privileged job admission."""
+import ast
 from pathlib import Path
 import re
 import subprocess
@@ -64,6 +65,58 @@ class WorkflowGateTests(unittest.TestCase):
         self.assertIn("github.event.workflow_run.event == 'pull_request' &&", workflow)
         self.assertIn('github.event.workflow_run.actor.id == 29139614 &&', workflow)
         self.assertIn('github.event.workflow_run.head_repository.full_name == github.repository', workflow)
+
+    def test_gate_expression_evaluates_ci_and_reserve_events(self):
+        workflow = (consumer_root() / '.github/workflows/renovate-policy.yml').read_text()
+        if consumer_repository() != 'fin-assist/go-ci' and "branches: ['renovate/**']" not in workflow:
+            self.skipTest('Consumer has not yet migrated to the FIN-504 workflow')
+        expression = re.search(r'^  gate:\n    if: >-\n((?:      .+\n)+)', workflow, re.M)
+        self.assertIsNotNone(expression)
+        source = ' '.join(expression[1].splitlines()).strip()
+        source = source.replace('&&', ' and ').replace('||', ' or ')
+        condition = ast.parse(source, mode='eval').body
+
+        def evaluate(node, context):
+            # Consumer workflows are untrusted data. Interpret only the
+            # boolean expression subset used by this gate.
+            match node:
+                case ast.Name(id='github'):
+                    return context
+                case ast.Name(id='true'):
+                    return True
+                case ast.Name(id='false'):
+                    return False
+                case ast.Attribute(value=value, attr=name):
+                    return evaluate(value, context)[name]
+                case ast.Constant(value=value) if type(value) in (int, str):
+                    return value
+                case ast.BoolOp(op=ast.And(), values=values):
+                    return all(evaluate(value, context) for value in values)
+                case ast.BoolOp(op=ast.Or(), values=values):
+                    return any(evaluate(value, context) for value in values)
+                case ast.Compare(left=left, ops=[ast.Eq()], comparators=[right]):
+                    return evaluate(left, context) == evaluate(right, context)
+                case ast.Compare(left=left, ops=[ast.NotEq()], comparators=[right]):
+                    return evaluate(left, context) != evaluate(right, context)
+                case _:
+                    self.fail(f'Unsupported gate expression: {ast.dump(node)}')
+
+        repo = 'fin-assist/go-ci'
+        valid = {'event': 'pull_request', 'actor': {'id': 29139614},
+                 'triggering_actor': {'id': 42}, 'head_repository': {'full_name': repo}}
+        cases = [
+            ('renovate retry', 'workflow_run', valid, 'refs/heads/main', True),
+            ('other actor', 'workflow_run', dict(valid, actor={'id': 42}), 'refs/heads/main', False),
+            ('fork', 'workflow_run', dict(valid, head_repository={'full_name': 'fork/go-ci'}), 'refs/heads/main', False),
+            ('push', 'workflow_run', dict(valid, event='push'), 'refs/heads/main', False),
+            ('schedule', 'schedule', None, 'refs/heads/main', True),
+            ('manual', 'workflow_dispatch', None, 'refs/heads/main', True),
+            ('other ref', 'workflow_dispatch', None, 'refs/heads/feature', False),
+        ]
+        for label, event, run, ref, expected in cases:
+            with self.subTest(case=label):
+                context = {'ref': ref, 'event_name': event, 'repository': repo, 'event': {'workflow_run': run}}
+                self.assertIs(evaluate(condition, context), expected)
 
     def test_scheduled_reconcile_alternates_across_year_boundary(self):
         workflow = (consumer_root() / '.github/workflows/renovate-policy.yml').read_text()

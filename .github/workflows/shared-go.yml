@@ -123,7 +123,7 @@ jobs:
               def _match_path(self, path, full_path, pattern):
                   return Path(full_path) != policy_shim and super()._match_path(path, full_path, pattern)
 
-          unittest.main(module=None, argv=['unittest', 'discover', '-s', 'scripts'],
+          unittest.main(module=None, argv=['unittest', 'discover', '-s', 'scripts', '-p', 'test_*.py'],
                         testLoader=ScriptTestLoader())
           PY
       - name: CHANGELOG.md format

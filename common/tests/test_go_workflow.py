@@ -410,6 +410,7 @@ if report is not None:
             nested.mkdir(parents=True)
             (nested / '__init__.py').touch()
             (scripts / 'test_renovate_shared.py').write_text('raise RuntimeError("policy shim imported")\n')
+            (scripts / 'testlib.py').write_text('raise RuntimeError("non-test helper imported")\n')
             passing = 'import unittest\nclass Fixture(unittest.TestCase):\n    def test_fixture(self):\n        pass\n'
             (nested / 'test_renovate_shared.py').write_text(passing)
             bootstrap = scripts / 'test_common_ci.py'

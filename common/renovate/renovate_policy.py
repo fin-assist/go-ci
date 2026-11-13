@@ -732,7 +732,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
         new_rules = quarantine_rules(ordinary_items, number)
         # The signed commit and the bot-owned branch both identify the alert.
         subject = message.splitlines()[0]
-        security = subject.endswith(' [SECURITY]') and pr['head']['ref'].endswith('-vulnerability')
+        security = subject.lower().endswith(' [security]') and pr['head']['ref'].endswith('-vulnerability')
         if security:
             new_rules.extend(security_quarantine_rules(quarantine_rules(items, number)))
         if stack_failed:

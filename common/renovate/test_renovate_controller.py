@@ -734,30 +734,38 @@ class SuccessiveQuarantineTests(unittest.TestCase):
         self.assertEqual(rules[1]['additionalBranchPrefix'],'fin211-retry-2-')
 
     def test_only_signed_security_update_creates_exact_security_block(self):
-        from renovate_policy_data import SECURITY_QUARANTINE_DESCRIPTION, validate_policy
+        from renovate_policy_data import (COMPOSE_DESCRIPTION, QUARANTINE_DESCRIPTION,
+                                          SECURITY_QUARANTINE_DESCRIPTION, validate_policy)
 
-        for repo, name in [('fin-assist/x', 'test-module'), ('fin-assist/android', 'androidx.core:core')]:
-            for signed_security in (False, True):
-                with self.subTest(repo=repo, signed_security=signed_security):
-                    api = Fake()
-                    api.repo = repo
-                    api.pr['head'].update(ref='renovate/fin211-retry-123-test-vulnerability',
-                                          repo={'full_name': repo})
-                    metadata = base64.b64encode(json.dumps([
-                        {'depName': name, 'newValue': '2.0.0', 'datasource': 'maven'}
-                    ]).encode()).decode()
-                    api.pr['title'] = 'Update dependency [SECURITY]'
-                    subject = 'Update dependency [SECURITY]' if signed_security else 'Update dependency'
-                    api.message = subject + '\n\n' + UPDATES + metadata + ' -->'
-                    api.run['conclusion'] = api.jobs[0]['conclusion'] = 'failure'
-                    reconcile(api, api.config)
-                    api.run['run_attempt'] = 2
-                    reconcile(api, api.config)
-                    self.assertEqual(api.pr['state'], 'closed')
-                    rules = validate_policy(api.policy)['packageRules']
-                    blocks = [rule for rule in rules if rule['description'] == SECURITY_QUARANTINE_DESCRIPTION]
-                    self.assertEqual([rule['matchPackageNames'] for rule in blocks],
-                                     [[name]] if signed_security else [])
+        alert_ref = 'renovate/fin211-retry-123-test-vulnerability'
+        cases = [
+            ('fin-assist/x', 'test-module', 'Update dependency', alert_ref, False),
+            ('fin-assist/x', 'test-module', 'Update dependency [SECURITY]', 'renovate/weekly-dependencies', False),
+            ('fin-assist/x', 'test-module', 'Update dependency [SECURITY]', alert_ref, True),
+            ('fin-assist/android', 'androidx.core:core', 'fix(deps): update dependency [security]', alert_ref, True),
+        ]
+        for repo, name, subject, ref, security in cases:
+            with self.subTest(repo=repo, subject=subject, ref=ref):
+                api = Fake()
+                api.repo = repo
+                api.pr['head'].update(ref=ref, repo={'full_name': repo})
+                metadata = base64.b64encode(json.dumps([
+                    {'depName': name, 'newValue': '2.0.0', 'datasource': 'maven'}
+                ]).encode()).decode()
+                api.pr['title'] = 'Update dependency [SECURITY]'
+                api.message = subject + '\n\n' + UPDATES + metadata + ' -->'
+                api.run['conclusion'] = api.jobs[0]['conclusion'] = 'failure'
+                reconcile(api, api.config)
+                api.run['run_attempt'] = 2
+                reconcile(api, api.config)
+                self.assertEqual(api.pr['state'], 'closed')
+                rules = validate_policy(api.policy)['packageRules']
+                blocks = [rule for rule in rules if rule['description'] == SECURITY_QUARANTINE_DESCRIPTION]
+                self.assertEqual([rule['matchPackageNames'] for rule in blocks], [[name]] if security else [])
+                if repo == 'fin-assist/android':
+                    descriptions = [rule['description'] for rule in rules]
+                    self.assertIn(COMPOSE_DESCRIPTION, descriptions)
+                    self.assertNotIn(QUARANTINE_DESCRIPTION, descriptions)
 
 
 class ReplacementAcknowledgementTests(unittest.TestCase):

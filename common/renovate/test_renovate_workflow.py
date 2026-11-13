@@ -61,6 +61,7 @@ class WorkflowGateTests(unittest.TestCase):
         self.assertIn("    types: [completed]\n    branches: ['renovate/**']\n  schedule:", workflow)
         self.assertIn("    - cron: '17 6 * * 1'\n  workflow_dispatch:", workflow)
         self.assertIn('  group: renovate-policy-controller\n  queue: max', workflow)
+        self.assertNotIn('cancel-in-progress: true', workflow)
         self.assertIn("github.event_name != 'workflow_run' ||", workflow)
         self.assertIn("github.event.workflow_run.event == 'pull_request' &&", workflow)
         self.assertIn('github.event.workflow_run.actor.id == 29139614 &&', workflow)

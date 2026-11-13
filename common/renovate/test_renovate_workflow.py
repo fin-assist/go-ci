@@ -25,11 +25,16 @@ class WorkflowGateTests(unittest.TestCase):
         self.assertIsNotNone(run, 'Workflow gate must contain an executable shell block')
         return textwrap.dedent(run[1])
 
-    def assert_gate(self, value, expected):
+    def assert_gate(self, value, expected, *, event="workflow_dispatch", now=None):
         script = self.gate_script()
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
-            env = {'GITHUB_OUTPUT': str(output)}
+            env = {'GITHUB_OUTPUT': str(output), 'EVENT_NAME': event}
+            if now is not None:
+                date = Path(directory) / 'date'
+                date.write_text(f'#!/bin/sh\nprintf "%s\\n" {now}\n')
+                date.chmod(0o700)
+                env['PATH'] = directory
             if value is not None:
                 env['RENOVATE_POLICY_ENABLED'] = value
             result = subprocess.run(['/bin/bash', '-e', '-o', 'pipefail', '-c', script],
@@ -47,6 +52,20 @@ class WorkflowGateTests(unittest.TestCase):
 
     def test_value_is_data_and_cannot_inject_shell_commands_or_outputs(self):
         self.assert_gate('true\nenabled=true\n$(exit 1)', 'false')
+
+    def test_scheduled_reconcile_alternates_across_year_boundary(self):
+        workflow = (consumer_root() / '.github/workflows/renovate-policy.yml').read_text()
+        if "branches: ['renovate/**']" not in workflow:
+            self.skipTest('Consumer has not yet migrated to the FIN-504 workflow')
+        from datetime import datetime, timezone
+        for year, month, day, expected in ((2026, 12, 21, 'true'),
+                                            (2026, 12, 28, 'false'),
+                                            (2027, 1, 4, 'true'),
+                                            (2027, 1, 11, 'false')):
+            now = int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+            with self.subTest(day=day):
+                self.assert_gate('true', expected, event='schedule', now=now)
+
 
 
 @unittest.skipUnless(consumer_repository() == 'fin-assist/infra', 'Infra stage data only')

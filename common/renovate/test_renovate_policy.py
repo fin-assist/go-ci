@@ -3,17 +3,9 @@ import copy
 import json
 import unittest
 from renovate_policy import (BOT_ID, GitHub, UPDATES, compose_update, quarantine_rules,
-                             selected_base, terminal_checks, trusted, updates)
+                             terminal_checks, trusted, updates)
 
 class PolicyTests(unittest.TestCase):
-    def test_release_selection(self):
-        self.assertEqual(selected_base([], set(), lambda _: True), 'main')
-        self.assertEqual(selected_base(['release/0.2.1'], set(), lambda _: True), 'release/0.2.1')
-        branches = ['release/0.2.9', 'release/0.2.10', 'release/0.1.0']
-        self.assertEqual(selected_base(branches, {'release/0.2.10'}, lambda _: True), 'release/0.2.9')
-        self.assertEqual(selected_base(branches, set(branches), lambda _: False), 'release/0.2.10')
-        self.assertEqual(selected_base(branches, set(branches), lambda _: True), 'main')
-
     def test_structured_upgrades(self):
         item = {'depName':'x', 'newValue':'v4.1.2', 'datasource':'npm'}
         encoded = base64.b64encode(json.dumps([item]).encode()).decode()
@@ -63,13 +55,6 @@ class PolicyTests(unittest.TestCase):
             def get(self,path): return list(range(100))
         with self.assertRaises(ValueError): Fake('', 'x').pages('pulls')
 
-    def test_ancestry_comparison(self):
-        class Fake(GitHub):
-            def pages(self,path,key=None):
-                return [{'name':'release/0.2.1'}] if path=='branches' else [{'head':{'ref':'release/0.2.1','repo':{'full_name':'x'}},'merged_at':'today'}]
-            def get(self,path): return {'behind_by': 0}
-        self.assertEqual(Fake('','x').base(),'main')
-
 class NativeEvidenceTests(unittest.TestCase):
     def test_exact_pr_attempt_beats_push_skipped_and_extra_required_still_blocks(self):
         class Fake(GitHub):
@@ -117,20 +102,20 @@ class DigestUpdateTests(unittest.TestCase):
         self.assertEqual(updates(UPDATES+encoded+' -->'),[item])
 
 class BaselineSyncTests(unittest.TestCase):
-    def test_release_baseline_is_pinned_and_synced_without_source_override(self):
+    def test_main_baseline_is_pinned_and_synced_without_source_override(self):
         class Fake(GitHub):
             def __init__(self):super().__init__('','x');self.writes=[];self.reads=[]
             def get(self,path):
                 self.reads.append(path)
-                if path=='branches/release%2F0.2.12':return {'commit':{'sha':'approved-release-sha'}}
-                if path=='contents/renovate-base.json?ref=approved-release-sha':return {'content':base64.b64encode(b'{"packageRules":[{"allowedVersions":"<2"}]}').decode()}
+                if path=='branches/main':return {'commit':{'sha':'approved-main-sha'}}
+                if path=='contents/renovate-base.json?ref=approved-main-sha':return {'content':base64.b64encode(b'{"packageRules":[{"allowedVersions":"<2"}]}').decode()}
                 if path=='contents/base.json?ref=renovate-policy':return {'sha':'old-preset-sha','content':base64.b64encode(b'{}').decode()}
                 raise AssertionError(path)
             def request(self,method,path,data):self.writes.append((path,data))
-        api=Fake();api.sync_baseline('release/0.2.12')
+        api=Fake();api.sync_baseline('main')
         self.assertEqual(json.loads(base64.b64decode(api.writes[0][1]['content'])),{'packageRules':[{'allowedVersions':'<2'}]})
         self.assertEqual(api.writes[0][1]['sha'],'old-preset-sha')
-        self.assertTrue(all('main' not in path for path in api.reads))
+        self.assertEqual(api.reads[0], 'branches/main')
 
 class RecoveryFamilyTests(unittest.TestCase):
     def test_recovery_is_limited_to_the_automatically_failed_major_family(self):
@@ -267,26 +252,6 @@ class RootRepositoryRequestTests(unittest.TestCase):
             return io.BytesIO(json.dumps({'allow_merge_commit':True}).encode())
         with patch('urllib.request.urlopen',urlopen):self.assertEqual(api.merge_method(),'merge')
         self.assertEqual(seen,['https://api.github.com/repos/owner/repo'])
-
-class ReleaseQueryAdapterTests(unittest.TestCase):
-    def test_no_release_does_not_fetch_any_pr_history(self):
-        api=GitHub('credential','owner/repo');paths=[]
-        def pages(path,key=None):
-            paths.append(path)
-            if path=='branches':return [{'name':'main'},{'name':'feature/x'}]
-            raise AssertionError('Unexpected full PR history fetch')
-        api.pages=pages
-        self.assertEqual(api.base(),'main');self.assertEqual(paths,['branches'])
-    def test_latest_active_release_queries_only_its_same_repo_head(self):
-        api=GitHub('credential','owner/repo');paths=[]
-        def pages(path,key=None):
-            paths.append(path)
-            if path=='branches':return [{'name':'release/1.0.0'},{'name':'release/2.0.0'}]
-            return [{'merged_at':'today','head':{'ref':'release/2.0.0','repo':{'full_name':'fork/repo'}}}]
-        api.pages=pages
-        self.assertEqual(api.base(),'release/2.0.0')
-        self.assertEqual(paths,['branches','pulls?state=closed&base=main&head=owner%3Arelease%2F2.0.0'])
-
 
 class NativeStatusBoundaryTests(unittest.TestCase):
     def test_external_status_cannot_be_hidden_by_green_job_for_unbound_context(self):

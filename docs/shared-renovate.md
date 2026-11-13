@@ -33,7 +33,9 @@ managers и группы сохраняют рассмотренные мест�
 
 ## Привилегированное исполнение
 
-Тонкий workflow потребителя сохраняет workflow_run/schedule/manual triggers и concurrency.
+Тонкий workflow потребителя сохраняет `workflow_run`, `schedule`, `workflow_dispatch` и concurrency.
+FIN-504 ограничивает `workflow_run` проверками собственных PR Renovate и оставляет резервную
+сверку раз в две недели.
 Отдельный `gate` без checkout, Environment и secrets выдаёт только literal true/false после
 точного shell-сравнения `RENOVATE_POLICY_ENABLED` с `true`. Значения TRUE/True/false/отсутствие
 не допускают привилегированный job. Для старых 13 wrappers это заменяет прежний baseline-sync
@@ -50,11 +52,11 @@ Action запускает `python3 -I` и контроллер из собств
 bootstrap, runtime или артефакты потребителя. Единственный дополнительный Python import path —
 каталог рассмотренного source. `--root` задаёт только местоположение JSON main checkout;
 config/bootstrap JSON symlinks отклоняются. События PR и ref вне main отклоняются до inputs/API.
-Загрузка конфигурации выбранного release target по API остаётся чтением JSON с pinned target commit.
+Загрузка конфигурации `main` по API остаётся чтением JSON с pinned target commit.
 Код target/PR при наличии write credential не исполняется.
 
 Сохранены App15368 bindings, strict/owner-only/no-force/no-delete, bot/signature metadata,
-выбор единственного активного release target или main, exact head/run/attempt, CAS и durable retry
+единственная цель `main`, exact head/run/attempt, CAS и durable retry
 budget. Оба late-conflict guard из рассмотренного FIN-451 присутствуют: fresh перед policy write
 после чтения quarantine/recovery и перед spent-retry UX/receipt repair. Post-policy/final-close
 guards сохранены. Ручные Go compiler/toolchain updates, включая uses-with, Docker и mixed PR,

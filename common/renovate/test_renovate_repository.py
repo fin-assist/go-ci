@@ -22,14 +22,20 @@ class RepositoryPolicyTests(unittest.TestCase):
         shared = next(rule for rule in baseline['packageRules']
                       if rule.get('groupSlug') == 'finassist-shared-go-ci')
         self.assertEqual(shared['groupName'], 'FinAssist shared Go CI')
-        self.assertEqual(shared['schedule'], ['at any time'])
         self.assertIs(shared['pinDigests'], True)
         self.assertEqual(len(baseline['customManagers']), 2)
-        # FIN-447 must not introduce the donor library's weekly grouping.
-        self.assertEqual(len(baseline['packageRules']), 3)
-        self.assertFalse(any(rule.get('groupName') == 'third-party dependencies'
-                             for rule in baseline['packageRules']))
         root = json.loads((ROOT / 'renovate.json').read_text())
+        if root.get('baseBranchPatterns') == ['main']:
+            self.assertEqual(root['timezone'], 'Europe/Moscow')
+            self.assertEqual(root['schedule'], ['* 0-8 * * 1'])
+            self.assertIs(root['updateNotScheduled'], False)
+            self.assertTrue(all('schedule' not in rule for rule in baseline['packageRules']))
+            weekly = next(rule for rule in baseline['packageRules'] if rule.get('groupSlug') == 'weekly-dependencies')
+            self.assertEqual(weekly['matchPackageNames'], ['*'])
+            self.assertCountEqual(weekly['matchUpdateTypes'], ['minor', 'patch', 'digest', 'pin', 'pinDigest'])
+        else:
+            self.assertEqual(shared['schedule'], ['at any time'])
+            self.assertEqual(len(baseline['packageRules']), 3)
         self.assertEqual(root['extends'], ['local>fin-assist/bank-bff:base#renovate-policy',
                                          'local>fin-assist/bank-bff:policy#renovate-policy'])
         self.assertIs(root['automerge'], False)

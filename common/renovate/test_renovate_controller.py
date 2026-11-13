@@ -9,7 +9,7 @@ class Fake(GitHub):
     """Retain the old run after dispatch to model an eventually consistent read."""
     def __init__(self):
         super().__init__('', 'fin-assist/x')
-        self.target='main'; self.actions=[]; self.comments=[]; self.receipts={}
+        self.actions=[]; self.comments=[]; self.receipts={}
         self.policy={'baseBranchPatterns':['main']}
         self.pr={'number':1,'state':'open','commits':1,'user':{'id':29139614,'login':'renovate[bot]'},
                  'head':{'sha':'abc','ref':'renovate/x','repo':{'full_name':self.repo}},
@@ -24,7 +24,6 @@ class Fake(GitHub):
         self.protected=True; self.before_fresh=None
     def read_receipts(self):return copy.deepcopy(self.receipts),'receipt-sha'
     def write_receipts(self,data,sha):self.receipts=copy.deepcopy(data);return 'new-receipt-sha'
-    def base(self): return self.target
     def sync_baseline(self,base):pass
     def read_policy(self):return copy.deepcopy(self.policy),'policy-sha'
     def write_policy(self,policy,sha):self.policy=copy.deepcopy(policy);self.actions.append(('policy',copy.deepcopy(policy)))
@@ -64,8 +63,8 @@ class ControllerTests(unittest.TestCase):
     def test_green_merges_expected_sha(self):
         api=Fake();reconcile(api,api.config)
         self.assertIn(('pulls/1/merge',{'sha':'abc','merge_method':'squash'}),api.actions)
-    def test_no_merge_after_new_head_or_release(self):
-        for update in (lambda a:a.pr['head'].update(sha='new'),lambda a:setattr(a,'target','release/0.3.0')):
+    def test_no_merge_after_new_head_or_retargeting(self):
+        for update in (lambda a:a.pr['head'].update(sha='new'),lambda a:a.pr['base'].update(ref='release/0.3.0')):
             api=Fake();api.before_fresh=update;reconcile(api,api.config)
             self.assertFalse(any(path=='pulls/1/merge' for path,_ in api.actions))
     def test_mixed_compose_never_merges(self):
@@ -126,8 +125,10 @@ class ControllerTests(unittest.TestCase):
         self.assertNotIn('PR закрыт',api.comments[0]['body'])
 
     def test_current_target_is_persisted_once(self):
-        api=Fake();api.target='release/0.3.0';reconcile(api,api.config)
-        self.assertEqual(api.policy['baseBranchPatterns'],['release/0.3.0'])
+        api=Fake();api.pr['base']['ref']='release/0.3.0'
+        api.policy['baseBranchPatterns']=['release/0.3.0']
+        reconcile(api,api.config)
+        self.assertEqual(api.policy['baseBranchPatterns'],['main'])
         self.assertEqual(len(api.actions),1)
 
 
@@ -542,10 +543,10 @@ class ConfigurationSyncTests(unittest.TestCase):
             def pages(self,path,key=None):
                 if path=='pulls?state=open':return []
                 return super().pages(path,key)
-        api=ConfigFake();api.target='release/0.2.12'
+        api=ConfigFake();api.policy['baseBranchPatterns']=['release/0.2.12']
         reconcile(api,api.config)
-        self.assertEqual(api.synced,'release/0.2.12')
-        self.assertEqual(api.policy['baseBranchPatterns'],['release/0.2.12'])
+        self.assertEqual(api.synced,'main')
+        self.assertEqual(api.policy['baseBranchPatterns'],['main'])
         self.assertEqual([action[0] for action in api.actions],['policy'])
 
 class ComposeCompilerCatalogTests(unittest.TestCase):
@@ -727,10 +728,12 @@ class SuccessiveQuarantineTests(unittest.TestCase):
             reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
             self.assertEqual(api.pr['state'],'closed');policy=api.policy
         rules=policy['packageRules']
-        self.assertEqual(len(rules),2)
+        self.assertEqual(len(rules),3)
         self.assertEqual(rules[0]['recreateWhen'],'always')
         self.assertEqual(rules[1]['recreateWhen'],'never')
         self.assertEqual(rules[1]['additionalBranchPrefix'],'fin211-retry-2-')
+        self.assertIs(rules[2]['enabled'], False)
+        self.assertTrue(rules[2]['matchJsonata'][0].endswith(' and isVulnerabilityAlert = true'))
 
 class ReplacementAcknowledgementTests(unittest.TestCase):
     def test_accepted_replacement_with_failed_receipt_ack_is_reused(self):
@@ -845,7 +848,7 @@ class NormalAndDigestPolicyTests(unittest.TestCase):
             reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
             policy=api.policy
         validate_policy(policy)
-        self.assertEqual(len(policy['packageRules']),4)
+        self.assertEqual(len(policy['packageRules']),6)
         recoveries=[r for r in policy['packageRules'] if r['description']==RECOVERY_DESCRIPTION]
         quarantines=[r for r in policy['packageRules'] if r['description']==QUARANTINE_DESCRIPTION]
         self.assertEqual(len(recoveries),2);self.assertEqual(len(quarantines),2)

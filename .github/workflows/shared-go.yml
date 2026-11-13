@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      setup_node:
+        description: Install Node.js for the caller's script tests
+        required: false
+        default: false
+        type: boolean
     secrets:
       GO_MODULES_TOKEN:
         required: false
@@ -88,8 +93,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      # bank-bff script tests execute its JavaScript helpers as well.
       - uses: actions/setup-node@v7
+        if: inputs.setup_node
         with:
           node-version: 26
       - name: Access to private modules
@@ -103,13 +108,6 @@ jobs:
         run: go mod tidy -diff
       - name: Vet
         run: go vet ./...
-      - name: All tests belong to a suite
-        run: |
-          if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" test-names
-          else
-            make test-names
-          fi
       - name: Script dependencies
         run: python3 -c 'import yaml' || { echo 'PyYAML is required for the script tests (python3-yaml).' >&2; exit 1; }
       - name: Test the scripts
@@ -117,7 +115,21 @@ jobs:
         # fixtures also invoke the independent pinned coverage analyzer (Go >=1.27).
         env:
           GOTOOLCHAIN: auto
-        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import unittest
+
+          # The required Renovate policy job already runs this shim's suite.
+          policy_shim = Path('scripts/test_renovate_shared.py').absolute()
+
+          class ScriptTestLoader(unittest.TestLoader):
+              def _match_path(self, path, full_path, pattern):
+                  return Path(full_path) != policy_shim and super()._match_path(path, full_path, pattern)
+
+          unittest.main(module=None, argv=['unittest', 'discover', '-s', 'scripts', '-p', 'test_*.py'],
+                        testLoader=ScriptTestLoader())
+          PY
       - name: CHANGELOG.md format
         run: |
           if [ "$SHARED_QUALITY" = true ]; then

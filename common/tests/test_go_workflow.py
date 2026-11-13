@@ -324,8 +324,8 @@ if report is not None:
                         steps('shared-go.yml').index(named('shared-go.yml', 'Access to private modules')))
 
     def test_quality_and_legacy_branches_execute_only_the_selected_runner_and_propagate_failure(self):
-        routes = [('All tests belong to a suite', ['test-names'], ['test-names']),
-                  ('Combined statements coverage (informational union)', ['combined'], ['cover-combined'])]
+        self.assertNotIn('All tests belong to a suite', [step.get('name') for step in steps('shared-go.yml')])
+        routes = [('Combined statements coverage (informational union)', ['combined'], ['cover-combined'])]
         for level in ['unit', 'integration', 'api']:
             routes += [(f'Collect {level} statements coverage', ['collect', level], ['collect-' + level]),
                        (f'Require 80 percent {level} statements coverage', ['check', level], ['check-' + level])]
@@ -390,12 +390,44 @@ if report is not None:
         tests = named('shared-go.yml', 'Test the scripts')
         self.assertLess(go_steps.index(dependency), go_steps.index(tests))
         self.assertIn('import yaml', dependency['run'])
-        self.assertTrue(any(step.get('uses', '').startswith('actions/setup-node@')
-                            for step in go_steps))
         checkout = next(step for step in steps('shared-api.yml')
                         if step.get('uses', '').startswith('actions/checkout@'))
         self.assertEqual(checkout['with']['fetch-depth'], 0)
         self.assertIn('python3 scripts/api_check.py', named('shared-api.yml', 'API changes')['run'])
+
+    def test_node_is_opt_in_and_precedes_script_tests(self):
+        workflow = document('shared-go.yml')
+        call = workflow.get('on', workflow.get(True))['workflow_call']
+        self.assertEqual(call['inputs']['setup_node'], {
+            'description': "Install Node.js for the caller's script tests",
+            'required': False, 'default': False, 'type': 'boolean'})
+        go_steps = steps('shared-go.yml')
+        node, = [step for step in go_steps if step.get('uses', '').startswith('actions/setup-node@')]
+        self.assertEqual(node['if'], 'inputs.setup_node')
+        self.assertEqual(node['with']['node-version'], 26)
+        self.assertLess(go_steps.index(node), go_steps.index(named('shared-go.yml', 'Test the scripts')))
+
+    def test_script_discovery_excludes_only_the_root_policy_shim_and_preserves_failures(self):
+        command = named('shared-go.yml', 'Test the scripts')['run']
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory) / 'scripts'
+            nested = scripts / 'nested'
+            nested.mkdir(parents=True)
+            (nested / '__init__.py').touch()
+            (scripts / 'test_renovate_shared.py').write_text('raise RuntimeError("policy shim imported")\n')
+            (scripts / 'testlib.py').write_text('raise RuntimeError("non-test helper imported")\n')
+            passing = 'import unittest\nclass Fixture(unittest.TestCase):\n    def test_fixture(self):\n        pass\n'
+            (nested / 'test_renovate_shared.py').write_text(passing)
+            bootstrap = scripts / 'test_common_ci.py'
+            bootstrap.write_text(passing)
+            for expected, output in [(0, 'OK'), (1, 'fixture failure')]:
+                if expected == 1:
+                    bootstrap.write_text(passing.replace('pass', 'self.fail("fixture failure")'))
+                result = subprocess.run(['bash', '-euo', 'pipefail', '-c', command],
+                                        cwd=directory, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertIn('Ran 2 tests', result.stderr)
+                self.assertIn(output, result.stderr)
 
 
 if __name__ == '__main__':

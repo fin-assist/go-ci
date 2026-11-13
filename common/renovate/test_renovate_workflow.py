@@ -53,6 +53,18 @@ class WorkflowGateTests(unittest.TestCase):
     def test_value_is_data_and_cannot_inject_shell_commands_or_outputs(self):
         self.assert_gate('true\nenabled=true\n$(exit 1)', 'false')
 
+    def test_event_gate_filters_renovate_pull_requests_and_keeps_pending_events(self):
+        workflow = (consumer_root() / '.github/workflows/renovate-policy.yml').read_text()
+        if consumer_repository() != 'fin-assist/go-ci' and "branches: ['renovate/**']" not in workflow:
+            self.skipTest('Consumer has not yet migrated to the FIN-504 workflow')
+        self.assertIn("    types: [completed]\n    branches: ['renovate/**']\n  schedule:", workflow)
+        self.assertIn("    - cron: '17 6 * * 1'\n  workflow_dispatch:", workflow)
+        self.assertIn('  group: renovate-policy-controller\n  queue: max', workflow)
+        self.assertIn("github.event_name != 'workflow_run' ||", workflow)
+        self.assertIn("github.event.workflow_run.event == 'pull_request' &&", workflow)
+        self.assertIn('github.event.workflow_run.actor.id == 29139614 &&', workflow)
+        self.assertIn('github.event.workflow_run.head_repository.full_name == github.repository', workflow)
+
     def test_scheduled_reconcile_alternates_across_year_boundary(self):
         workflow = (consumer_root() / '.github/workflows/renovate-policy.yml').read_text()
         if "branches: ['renovate/**']" not in workflow:

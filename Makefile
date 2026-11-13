@@ -8,8 +8,9 @@ test: ## shared policy and bootstrap regression cases
 policy-test: ## Renovate controller regression cases, without credentials or network
 	$(PYTHON) -I common/renovate/test.py --root . --mode policy
 
+# actionlint #657: GitHub supports concurrency.queue; its linter does not yet parse it.
 lint: ## reusable workflow syntax
-	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck='' -pyflakes=''
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck='' -pyflakes='' -ignore '^unexpected key "queue" for "concurrency" section'
 
 probe: ## actual accepted and rejected Go/SQL lint cases
 	$(PYTHON) -B common/probe_lint.py

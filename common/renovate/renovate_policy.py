@@ -589,12 +589,8 @@ def reconcile(api, config, trigger=None):
     if not api.protection(base, config['requiredChecks']):
         raise ValueError('Target branch must enforce required CI and administrator protection before preset sync')
     api.sync_baseline(base)
-    rules = policy.get('packageRules', [])
-    security_rules = [rule for rule in security_quarantine_rules(rules) if rule not in rules]
-    if policy.get('baseBranchPatterns') != [base] or security_rules:
+    if policy.get('baseBranchPatterns') != [base]:
         policy['baseBranchPatterns'] = [base]
-        if security_rules:
-            rules.extend(security_rules)
         api.write_policy(policy, policy_sha)
         policy, policy_sha = api.read_policy()
     failures = []
@@ -620,7 +616,8 @@ def reconcile_pr(api, config, base, candidate, trigger):
     sha = pr['head']['sha']
     try:
         head = next((commit for commit in commits if commit.get('sha') == sha), None)
-        items = updates(head.get('commit', {}).get('message')) if head else []
+        message = head.get('commit', {}).get('message') if head else None
+        items = updates(message)
     except (ValueError, TypeError):
         print(f'PR {number}: invalid metadata; owner review required')
         return
@@ -733,7 +730,11 @@ def reconcile_pr(api, config, base, candidate, trigger):
         ordinary_items = [item for item in items if not (stack_failed and compose_stack_member(item))]
         recovery = recovery_rules(ordinary_items, number)
         new_rules = quarantine_rules(ordinary_items, number)
-        new_rules.extend(security_quarantine_rules(new_rules))
+        # The signed commit and the bot-owned branch both identify the alert.
+        subject = message.splitlines()[0]
+        security = subject.endswith(' [SECURITY]') and pr['head']['ref'].endswith('-vulnerability')
+        if security:
+            new_rules.extend(security_quarantine_rules(quarantine_rules(items, number)))
         if stack_failed:
             new_rules.append(compose_stack_rule(number))
         policy, policy_sha = api.read_policy()
@@ -765,6 +766,7 @@ def reconcile_pr(api, config, base, candidate, trigger):
                 + 'CI повторно упал на SHA `' + sha + '`. Попытки: ' + ', '.join(name + '=' + str(value['run_attempt']) for name, value in runs.items()) + '.\n' + failed
                 + '\nПовторное падение подтверждено; запрошено автоматическое закрытие. Контроллер ветку не удаляет. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
                 + ('Стек FIN-184 остаётся одной видимой Pending Approval группой: будущие версии требуют совместного Dashboard approval и ручной UI-проверки. ' if stack_failed else 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; та же версия требует явного подтверждения. ')
+                + ('Для повтора security-обновления владелец снимает точную блокировку в preset. ' if security else '')
                 + 'См. docs/renovate-policy.md.')
         # A collaborator may edit/delete comments; neither changes the receipt.
         comment_id = receipt.get('comment_id')

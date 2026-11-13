@@ -5,14 +5,14 @@ on:
     types: [completed]
     branches: ['renovate/**']
   schedule:
-    - cron: '17 0 * * 1'
+    - cron: '17 6 * * 1'
   workflow_dispatch:
 permissions:
   contents: read
   checks: read
 concurrency:
   group: renovate-policy-controller
-  cancel-in-progress: false
+  queue: max
 jobs:
   gate:
     if: >-

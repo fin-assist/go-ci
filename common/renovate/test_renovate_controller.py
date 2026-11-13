@@ -728,12 +728,37 @@ class SuccessiveQuarantineTests(unittest.TestCase):
             reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
             self.assertEqual(api.pr['state'],'closed');policy=api.policy
         rules=policy['packageRules']
-        self.assertEqual(len(rules),3)
+        self.assertEqual(len(rules),2)
         self.assertEqual(rules[0]['recreateWhen'],'always')
         self.assertEqual(rules[1]['recreateWhen'],'never')
         self.assertEqual(rules[1]['additionalBranchPrefix'],'fin211-retry-2-')
-        self.assertIs(rules[2]['enabled'], False)
-        self.assertTrue(rules[2]['matchJsonata'][0].endswith(' and isVulnerabilityAlert = true'))
+
+    def test_only_signed_security_update_creates_exact_security_block(self):
+        from renovate_policy_data import SECURITY_QUARANTINE_DESCRIPTION, validate_policy
+
+        for repo, name in [('fin-assist/x', 'test-module'), ('fin-assist/android', 'androidx.core:core')]:
+            for signed_security in (False, True):
+                with self.subTest(repo=repo, signed_security=signed_security):
+                    api = Fake()
+                    api.repo = repo
+                    api.pr['head'].update(ref='renovate/fin211-retry-123-test-vulnerability',
+                                          repo={'full_name': repo})
+                    metadata = base64.b64encode(json.dumps([
+                        {'depName': name, 'newValue': '2.0.0', 'datasource': 'maven'}
+                    ]).encode()).decode()
+                    api.pr['title'] = 'Update dependency [SECURITY]'
+                    subject = 'Update dependency [SECURITY]' if signed_security else 'Update dependency'
+                    api.message = subject + '\n\n' + UPDATES + metadata + ' -->'
+                    api.run['conclusion'] = api.jobs[0]['conclusion'] = 'failure'
+                    reconcile(api, api.config)
+                    api.run['run_attempt'] = 2
+                    reconcile(api, api.config)
+                    self.assertEqual(api.pr['state'], 'closed')
+                    rules = validate_policy(api.policy)['packageRules']
+                    blocks = [rule for rule in rules if rule['description'] == SECURITY_QUARANTINE_DESCRIPTION]
+                    self.assertEqual([rule['matchPackageNames'] for rule in blocks],
+                                     [[name]] if signed_security else [])
+
 
 class ReplacementAcknowledgementTests(unittest.TestCase):
     def test_accepted_replacement_with_failed_receipt_ack_is_reused(self):
@@ -848,7 +873,7 @@ class NormalAndDigestPolicyTests(unittest.TestCase):
             reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
             policy=api.policy
         validate_policy(policy)
-        self.assertEqual(len(policy['packageRules']),6)
+        self.assertEqual(len(policy['packageRules']),4)
         recoveries=[r for r in policy['packageRules'] if r['description']==RECOVERY_DESCRIPTION]
         quarantines=[r for r in policy['packageRules'] if r['description']==QUARANTINE_DESCRIPTION]
         self.assertEqual(len(recoveries),2);self.assertEqual(len(quarantines),2)

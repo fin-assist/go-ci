@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      setup_node:
+        description: Install Node.js for the caller's script tests
+        required: false
+        default: false
+        type: boolean
     secrets:
       GO_MODULES_TOKEN:
         required: false
@@ -88,9 +93,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      # bank-bff script tests execute its JavaScript helpers as well.
       - uses: actions/setup-node@v7
-        if: github.repository == 'fin-assist/bank-bff'
+        if: inputs.setup_node
         with:
           node-version: 26
       - name: Access to private modules

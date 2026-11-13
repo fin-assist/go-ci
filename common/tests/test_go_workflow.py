@@ -395,10 +395,15 @@ if report is not None:
         self.assertEqual(checkout['with']['fetch-depth'], 0)
         self.assertIn('python3 scripts/api_check.py', named('shared-api.yml', 'API changes')['run'])
 
-    def test_node_is_installed_only_for_bank_bff_before_its_script_tests(self):
+    def test_node_is_opt_in_and_precedes_script_tests(self):
+        workflow = document('shared-go.yml')
+        call = workflow.get('on', workflow.get(True))['workflow_call']
+        self.assertEqual(call['inputs']['setup_node'], {
+            'description': "Install Node.js for the caller's script tests",
+            'required': False, 'default': False, 'type': 'boolean'})
         go_steps = steps('shared-go.yml')
         node, = [step for step in go_steps if step.get('uses', '').startswith('actions/setup-node@')]
-        self.assertEqual(node['if'], "github.repository == 'fin-assist/bank-bff'")
+        self.assertEqual(node['if'], 'inputs.setup_node')
         self.assertEqual(node['with']['node-version'], 26)
         self.assertLess(go_steps.index(node), go_steps.index(named('shared-go.yml', 'Test the scripts')))
 

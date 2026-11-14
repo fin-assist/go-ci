@@ -49,7 +49,7 @@ class ProductionImageTests(unittest.TestCase):
         admission = publish["steps"][0]["run"]
         upstream = {"path": ".github/workflows/ci.yml", "event": "push", "head_branch": "main",
                     "status": "completed", "conclusion": "success", "head_sha": SHA, "id": 12,
-                    "run_attempt": 1, "repository": {"full_name": "fin-assist/user"},
+                    "run_attempt": 3, "repository": {"full_name": "fin-assist/user"},
                     "head_repository": {"full_name": "fin-assist/user"}}
         for repo, protected, changes, passed in [
             ("fin-assist/user", "true", {}, True),
@@ -59,18 +59,64 @@ class ProductionImageTests(unittest.TestCase):
             ("fin-assist/user", "true", {"event": "pull_request"}, False),
             ("fin-assist/user", "true", {"head_branch": "dev"}, False),
             ("fin-assist/user", "true", {"head_repository": {"full_name": "example/user"}}, False),
+            ("fin-assist/user", "true", {"repository": {"full_name": "example/user"}}, False),
             ("fin-assist/user", "true", {"path": ".github/workflows/other.yml"}, False),
             ("fin-assist/user", "true", {"conclusion": "failure"}, False),
+            ("fin-assist/user", "true", {"status": "in_progress"}, False),
+            ("fin-assist/user", "true", {"GITHUB_EVENT_NAME": "push"}, False),
+            ("fin-assist/user", "true", {"GITHUB_REF": "refs/heads/dev"}, False),
         ]:
             with self.subTest(repo=repo, protected=protected, changes=changes), tempfile.TemporaryDirectory() as directory:
                 event = Path(directory) / "event.json"
-                event.write_text(json.dumps({"workflow_run": upstream | changes}))
+                event.write_text(json.dumps({"workflow_run": upstream | {
+                    key: value for key, value in changes.items() if not key.startswith("GITHUB_")
+                }}))
+                output = event.with_suffix(".out")
                 env = {**os.environ, "GITHUB_REPOSITORY": repo, "GITHUB_REF_PROTECTED": protected,
                        "GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REF": "refs/heads/main",
-                       "GITHUB_EVENT_PATH": str(event), "PUBLISHER_SHA": SHA, "GITHUB_OUTPUT": str(event.with_suffix(".out"))}
+                       "GITHUB_EVENT_PATH": str(event), "PUBLISHER_SHA": SHA, "GITHUB_OUTPUT": str(output),
+                       "GITHUB_SHA": "d" * 40,
+                       **{key: value for key, value in changes.items() if key.startswith("GITHUB_")}}
                 result = subprocess.run(["bash", "-e", "-c", admission], env=env,
                                         timeout=5, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, passed)
+                if passed:
+                    self.assertEqual(output.read_text(), f"run=12\nattempt=3\nsha={SHA}\n")
+                else:
+                    self.assertFalse(output.exists())
+
+    def test_scan_refuses_vulnerable_image_or_scanner_failure(self):
+        steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]
+        scan = next(step["run"] for step in steps if step.get("name") == "Scan image and generate SBOM")
+        for outcome in ("success", "vulnerable", "unavailable"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifact = root / "service-image"
+                artifact.mkdir()
+                self.stub(root, "curl", "exit 0\n")
+                self.stub(root, "sha256sum", "cat >/dev/null\n")
+                self.stub(root, "tar", 'cp "$STUB_TRIVY" "$4/trivy"\n')
+                self.stub(root, "trivy", """
+case "$*" in
+  *--exit-code*)
+    [[ "$OUTCOME" == success ]] || {
+      if [[ "$OUTCOME" == vulnerable ]]; then
+        printf '%s\\n' '{"Results":[{"Vulnerabilities":[{"VulnerabilityID":"CVE-fixture","PkgName":"fixture","Severity":"HIGH"}]}]}' > vulnerabilities.json
+      fi
+      exit 1
+    }
+    printf '%s\\n' '{}' > vulnerabilities.json ;;
+  *) printf '%s\\n' '{}' > sbom.cdx.json ;;
+esac
+""")
+                env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "RUNNER_TEMP": directory,
+                       "STUB_TRIVY": str(root / "trivy"), "OUTCOME": outcome}
+                result = subprocess.run(["bash", "-e", "-c", scan], env=env,
+                                        timeout=5, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, outcome == "success", result.stderr)
+                self.assertEqual((artifact / "sbom.cdx.json").exists(), outcome == "success")
+                if outcome == "vulnerable":
+                    self.assertIn("CVE-fixture\tfixture\tHIGH", result.stderr)
 
     def test_source_gates_are_required_exactly_once(self):
         steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]

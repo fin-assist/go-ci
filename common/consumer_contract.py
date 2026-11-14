@@ -95,6 +95,7 @@ def suite(root, common):
             if enabled:
                 self.assertEqual(manifest['profile'], 'service')
                 self.assertIn(modules[0], PRODUCTION_MODULES)
+                self.assertEqual(workflow.get('name'), PRODUCTION_TRIGGER['workflow_run']['workflows'][0])
                 self.assertEqual(workflow['jobs']['image-check']['with']['service'], modules[0].rsplit('/', 1)[1])
                 production = yaml.safe_load(production_file.read_text())
                 self.assertEqual(production.get('on', production.get(True)), PRODUCTION_TRIGGER)

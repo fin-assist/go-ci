@@ -70,7 +70,7 @@ class ConsumerContractTests(unittest.TestCase):
                 'env': {'RESULT': '${{ needs.' + kind + '-check.result }}'},
                 'runs-on': 'ubuntu-latest', 'timeout-minutes': 2,
                 'steps': [{'run': 'test "$RESULT" = success'}]}
-        return {'permissions': {'actions': 'read', 'contents': 'read'}, 'jobs': jobs}
+        return {'name': 'CI', 'permissions': {'actions': 'read', 'contents': 'read'}, 'jobs': jobs}
 
     def result(self, document):
         (self.root / '.github/workflows/ci.yml').write_text(yaml.safe_dump(document))
@@ -112,8 +112,11 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertEqual(self.result(document).wasSuccessful(), valid)
         document = self.fixture()
         self.assertFalse(self.result(document).wasSuccessful())
-        path.unlink()
         document['jobs']['image-check']['with'].update(service='user', prepare_production=True)
+        document['name'] = 'Go CI'
+        self.assertFalse(self.result(document).wasSuccessful())
+        path.unlink()
+        document['name'] = 'CI'
         self.assertFalse(self.result(document).wasSuccessful())
 
     def quality_make(self):

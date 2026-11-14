@@ -1,8 +1,12 @@
 """Exercise the production image workflow's trust boundary and tag handling."""
 
+import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -51,6 +55,56 @@ class ProductionImageTests(unittest.TestCase):
                        "ARTIFACT_ID": artifact_id, "GITHUB_SHA": SHA}
                 result = subprocess.run(["bash", "-e", "-c", admission], env=env, timeout=5)
                 self.assertEqual(result.returncode == 0, passed)
+
+    def test_validation_rejects_changed_archive_evidence_and_build_identity(self):
+        steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]
+        validate = next(step["run"] for step in steps if step.get("id") == "validated")
+        cases = (
+            ("valid", {}, None, IMAGE_ID, True),
+            ("wrong source", {"source_sha": "e" * 40}, None, IMAGE_ID, False),
+            ("wrong repository", {"repository": "fin-assist/user"}, None, IMAGE_ID, False),
+            ("wrong run", {"run_id": 14}, None, IMAGE_ID, False),
+            ("wrong attempt", {"run_attempt": 2}, None, IMAGE_ID, False),
+            ("changed image", {}, "image.tar", IMAGE_ID, False),
+            ("changed SBOM", {}, "sbom.cdx.json", IMAGE_ID, False),
+            ("wrong loaded ID", {}, None, DIGEST, False),
+        )
+        for name, changes, tampered, loaded, accepted in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifact = root / "service-image"
+                artifact.mkdir()
+                archive = artifact / "image.tar"
+                with tarfile.open(archive, "w") as image:
+                    entry = tarfile.TarInfo("manifest.json")
+                    manifest = b"[{}]"
+                    entry.size = len(manifest)
+                    image.addfile(entry, io.BytesIO(manifest))
+                build = {"repository": "fin-assist/analytics", "service": "analytics",
+                         "run_id": 15, "run_attempt": 1, "source_sha": SHA, "event": "push",
+                         "ref": "refs/heads/main", "platform": "linux/amd64", "image_id": IMAGE_ID}
+                (artifact / "build.json").write_text(json.dumps(build | changes))
+                for name in ("vulnerabilities.json", "sbom.cdx.json"):
+                    (artifact / name).write_text("{}")
+                checksums = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+                             for path in sorted(artifact.iterdir())]
+                (artifact / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
+                if tampered:
+                    with (artifact / tampered).open("ab") as broken:
+                        broken.write(b"changed")
+                self.stub(root, "git", 'printf "%s\\n" "$GITHUB_SHA"\n')
+                self.stub(root, "docker", 'if [[ "$2" == inspect ]]; then printf "%s\\n" "$LOADED"; fi\n')
+                env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "RUNNER_TEMP": directory,
+                       "GITHUB_REPOSITORY": "fin-assist/analytics", "GITHUB_SHA": SHA,
+                       "GITHUB_RUN_ID": "15", "GITHUB_RUN_ATTEMPT": "1", "LOADED": loaded,
+                       "GITHUB_OUTPUT": str(root / "output")}
+                result = subprocess.run(["bash", "-e", "-c", validate], env=env,
+                                        timeout=5, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if accepted:
+                    self.assertEqual((root / "output").read_text(), f"image_id={IMAGE_ID}\n")
+                else:
+                    self.assertFalse((root / "output").exists())
 
     def test_publish_reuses_matching_tags_and_refuses_conflicts_and_registry_errors(self):
         steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]

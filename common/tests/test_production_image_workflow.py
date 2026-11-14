@@ -243,7 +243,7 @@ case "$1" in
         if [[ "$state" == matching ]] || grep -qxF "$tag" "$CALLS"; then
             printf '%s\\n' "$DIGEST"
         elif [[ "$state" == missing ]]; then
-            printf 'MANIFEST_UNKNOWN\\n' >&2
+            printf 'unexpected status code 404 Not Found (HEAD responses have no body, use GET for details)\\n' >&2
             exit 1
         elif [[ "$state" == conflict ]]; then
             printf '%s\\n' "$IMAGE_ID"

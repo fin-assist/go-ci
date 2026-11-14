@@ -179,7 +179,7 @@ jobs:
               printf 'Immutable tag already points to another digest: %s\n' "$target" >&2
               exit 1
             }
-          elif grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN' "$error"; then
+          elif grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|unexpected status code 404 Not Found' "$error"; then
             crane push image.tar "$target"
           else
             cat "$error" >&2

@@ -87,6 +87,35 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertTrue(result.wasSuccessful())
                 self.assertEqual(result.testsRun, 3)
 
+    def test_production_publisher_requires_supported_service_and_exact_caller(self):
+        path = self.root / '.github/workflows/production-image.yml'
+        publisher = {
+            'uses': CONTRACT.SOURCE + 'shared-production-image.yml@' + PIN,
+            'permissions': {'actions': 'read', 'contents': 'read', 'packages': 'write'},
+            'with': {'revision': PIN},
+        }
+        for module, changes, valid in [
+            ('user', {}, True), ('bank-bff', {}, True), ('go-service-template', {}, False),
+            ('user', {'uses': publisher['uses'].replace(PIN, 'b' * 40)}, False),
+            ('user', {'with': {'revision': 'b' * 40}}, False),
+            ('user', {'permissions': {'contents': 'write', 'packages': 'write'}}, False),
+            ('user', {'secrets': 'inherit'}, False),
+        ]:
+            with self.subTest(module=module, changes=changes):
+                document = self.fixture(module='github.com/fin-assist/' + module)
+                document['jobs']['image-check']['with'].update(service=module, prepare_production=True)
+                path.write_text(yaml.safe_dump({
+                    'on': CONTRACT.PRODUCTION_TRIGGER,
+                    'permissions': {'actions': 'read', 'contents': 'read'},
+                    'jobs': {'publish': publisher | changes},
+                }))
+                self.assertEqual(self.result(document).wasSuccessful(), valid)
+        document = self.fixture()
+        self.assertFalse(self.result(document).wasSuccessful())
+        path.unlink()
+        document['jobs']['image-check']['with'].update(service='user', prepare_production=True)
+        self.assertFalse(self.result(document).wasSuccessful())
+
     def quality_make(self):
         text = ''
         for targets, command in [('test-names', 'test-names'),

@@ -103,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/service-image"
-          sha256sum --check --strict SHA256SUMS
+          sha256sum -c SHA256SUMS
           image_id=$(jq -er \
             --arg repository "$GITHUB_REPOSITORY" --arg sha "$SOURCE_SHA" \
             --arg run "$SOURCE_RUN" --arg attempt "$SOURCE_ATTEMPT" '
@@ -127,7 +127,7 @@ jobs:
             'https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz' \
             -o "$tool/trivy.tar.gz"
           printf '%s  %s\n' e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7 \
-            "$tool/trivy.tar.gz" | sha256sum --check --strict
+            "$tool/trivy.tar.gz" | sha256sum -c -
           tar -xzf "$tool/trivy.tar.gz" -C "$tool" trivy
           cd "$RUNNER_TEMP/service-image"
           if ! "$tool/trivy" image --timeout 5m --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
@@ -149,7 +149,7 @@ jobs:
             'https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz' \
             -o "$tool/crane.tar.gz"
           printf '%s  %s\n' 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 \
-            "$tool/crane.tar.gz" | sha256sum --check --strict
+            "$tool/crane.tar.gz" | sha256sum -c -
           tar -xzf "$tool/crane.tar.gz" -C "$tool" crane
           printf '%s\n' "$tool" >> "$GITHUB_PATH"
       - name: Publish approved image by commit and verify digest

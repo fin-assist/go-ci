@@ -118,6 +118,27 @@ esac
                 if outcome == "vulnerable":
                     self.assertIn("CVE-fixture\tfixture\tHIGH", result.stderr)
 
+    def test_downloaded_tool_checksum_blocks_tampered_trivy_and_crane(self):
+        steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]
+        tool_steps = ("Scan image and generate SBOM", "Install pinned registry client")
+        for title in tool_steps:
+            with self.subTest(title=title), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.stub(root, "curl", """
+while [[ "$1" != -o ]]; do shift; done
+printf 'tampered data' > "$2"
+""")
+                self.stub(root, "tar", 'touch "$TAR_CALLED"\n')
+                invoked = root / "extract-called"
+                env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "RUNNER_TEMP": directory,
+                       "TAR_CALLED": str(invoked), "GITHUB_PATH": str(root / "path")}
+                step = next(step["run"] for step in steps if step.get("name") == title)
+                result = subprocess.run(["bash", "-e", "-c", step], env=env,
+                                        timeout=5, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("FAILED", result.stdout)
+                self.assertFalse(invoked.exists())
+
     def test_source_gates_are_required_exactly_once(self):
         steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]
         gate = next(step["run"] for step in steps if step["name"] == "Verify completed source CI gates")

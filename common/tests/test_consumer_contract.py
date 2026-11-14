@@ -113,6 +113,12 @@ class ConsumerContractTests(unittest.TestCase):
         document = self.fixture()
         self.assertFalse(self.result(document).wasSuccessful())
         document['jobs']['image-check']['with'].update(service='user', prepare_production=True)
+        path.write_text(yaml.safe_dump({
+            'on': CONTRACT.PRODUCTION_TRIGGER,
+            'permissions': {'actions': 'read', 'contents': 'read'},
+            'jobs': {'publish': publisher},
+        }))
+        self.assertTrue(self.result(document).wasSuccessful())
         document['name'] = 'Go CI'
         self.assertFalse(self.result(document).wasSuccessful())
         path.unlink()

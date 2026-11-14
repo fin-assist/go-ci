@@ -1,0 +1,208 @@
+name: Publish a tested production image
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        description: Full SHA of the reviewed publisher workflow
+        required: true
+        type: string
+    outputs:
+      image:
+        description: Published GHCR reference pinned by manifest digest
+        value: ${{ jobs.publish.outputs.image }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: ghcr-${{ github.repository }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - name: Validate publication context
+        id: source
+        env:
+          PUBLISHER_SHA: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$PUBLISHER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          case "$GITHUB_REPOSITORY" in
+            fin-assist/analytics|fin-assist/assistant|fin-assist/bank-bff|fin-assist/bank-statement-data|fin-assist/user) ;;
+            *) exit 1 ;;
+          esac
+          source=$(jq -er --arg repo "$GITHUB_REPOSITORY" '
+            .workflow_run | select(.event == "push" and .head_branch == "main" and
+              .repository.full_name == $repo and .head_repository.full_name == $repo and
+              .path == ".github/workflows/ci.yml" and .status == "completed" and .conclusion == "success") |
+            [.id, .run_attempt, .head_sha] | @tsv
+          ' "$GITHUB_EVENT_PATH")
+          IFS=$'\t' read -r run attempt sha <<< "$source"
+          [[ "$run" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ && "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'run=%s\nattempt=%s\nsha=%s\n' "$run" "$attempt" "$sha" >> "$GITHUB_OUTPUT"
+      - name: Verify completed source CI gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ steps.source.outputs.run }}
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT/jobs?per_page=100" |
+            jq -e '
+              [.[].jobs[]] as $jobs |
+              ["go", "lint", "image"] |
+              all(. as $gate | [$jobs[] | select(.name == $gate)] |
+                  length == 1 and all(.status == "completed" and .conclusion == "success"))
+            ' > /dev/null
+      - name: Check the caller and existing package are private
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          test "$PRIVATE_REPOSITORY" = true
+          package="orgs/fin-assist/packages/container/${GITHUB_REPOSITORY#fin-assist/}"
+          error="$RUNNER_TEMP/ghcr-error"
+          if visibility=$(gh api "$package" --jq .visibility 2>"$error"); then
+            test "$visibility" = private
+          elif ! grep -q 'HTTP 404' "$error"; then
+            cat "$error" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: production-image-${{ github.event.repository.name }}-${{ steps.source.outputs.sha }}-${{ steps.source.outputs.attempt }}
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run }}
+          path: ${{ runner.temp }}/service-image
+      - name: Validate image and build evidence
+        id: validated
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_RUN: ${{ steps.source.outputs.run }}
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/service-image"
+          sha256sum -c SHA256SUMS
+          image_id=$(jq -er \
+            --arg repository "$GITHUB_REPOSITORY" --arg sha "$SOURCE_SHA" \
+            --arg run "$SOURCE_RUN" --arg attempt "$SOURCE_ATTEMPT" '
+              select(.repository == $repository and .source_sha == $sha and
+                     .service == ($repository | split("/") | last) and
+                     .event == "push" and .ref == "refs/heads/main" and
+                     .run_id == ($run | tonumber) and .run_attempt == ($attempt | tonumber) and
+                     .platform == "linux/amd64") |
+              .image_id | select(test("^sha256:[0-9a-f]{64}$"))
+            ' build.json)
+          tar -xOf image.tar manifest.json | jq -e 'length == 1' > /dev/null
+          docker image load --input image.tar
+          test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
+          printf 'image_id=%s\n' "$image_id" >> "$GITHUB_OUTPUT"
+      - name: Scan image and generate SBOM
+        run: |
+          set -euo pipefail
+          # https://github.com/aquasecurity/trivy/releases/tag/v0.76.0
+          tool=$(mktemp -d)
+          curl --fail --silent --show-error --location --max-time 90 \
+            'https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz' \
+            -o "$tool/trivy.tar.gz"
+          printf '%s  %s\n' e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7 \
+            "$tool/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$tool/trivy.tar.gz" -C "$tool" trivy
+          cd "$RUNNER_TEMP/service-image"
+          if ! "$tool/trivy" image --timeout 5m --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+            --input image.tar --format json --output vulnerabilities.json; then
+            if [[ -f vulnerabilities.json ]]; then
+              jq -r '.Results[]?.Vulnerabilities[]? | [.VulnerabilityID, .PkgName, .Severity] | @tsv' \
+                vulnerabilities.json >&2
+            fi
+            exit 1
+          fi
+          "$tool/trivy" image --timeout 5m --scanners vuln --skip-db-update --skip-java-db-update \
+            --input image.tar --format cyclonedx --output sbom.cdx.json
+      - name: Install pinned registry client
+        run: |
+          set -euo pipefail
+          # https://github.com/google/go-containerregistry/releases/tag/v0.22.1
+          tool=$(mktemp -d)
+          curl --fail --silent --show-error --location --max-time 90 \
+            'https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz' \
+            -o "$tool/crane.tar.gz"
+          printf '%s  %s\n' 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 \
+            "$tool/crane.tar.gz" | sha256sum -c -
+          tar -xzf "$tool/crane.tar.gz" -C "$tool" crane
+          printf '%s\n' "$tool" >> "$GITHUB_PATH"
+      - name: Publish approved image by commit and verify digest
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_ID: ${{ steps.validated.outputs.image_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          PUBLISHER_SHA: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          service="${GITHUB_REPOSITORY#fin-assist/}"
+          package="orgs/fin-assist/packages/container/$service"
+          error="$RUNNER_TEMP/ghcr-error"
+          cd "$RUNNER_TEMP/service-image"
+          digest=$(crane digest --tarball image.tar)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          image="ghcr.io/$GITHUB_REPOSITORY"
+          target="$image:sha-$SOURCE_SHA"
+
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if existing=$(crane digest "$target" 2>"$error"); then
+            test "$existing" = "$digest" || {
+              printf 'Immutable tag already points to another digest: %s\n' "$target" >&2
+              exit 1
+            }
+          elif grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|unexpected status code 404 Not Found' "$error"; then
+            crane push image.tar "$target"
+          else
+            cat "$error" >&2
+            exit 1
+          fi
+          test "$(crane digest "$target")" = "$digest"
+          test "$(crane manifest "$image@$digest" | jq -er .config.digest)" = "$IMAGE_ID"
+          test "$(gh api "$package" --jq .visibility)" = private
+          sha256sum image.tar build.json sbom.cdx.json vulnerabilities.json > SHA256SUMS
+          jq --arg image "$image@$digest" --arg workflow "$GITHUB_WORKFLOW_REF" \
+            --arg publisher "$PUBLISHER_SHA" --rawfile checksums SHA256SUMS \
+            '. + {image: $image, workflow: $workflow, publisher_sha: $publisher, checksums: $checksums}' \
+            build.json > provenance.json
+          printf 'image=%s@%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
+          printf 'GHCR digest for the infra PR: `%s@%s`\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: production-evidence-${{ steps.source.outputs.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/service-image/provenance.json
+            ${{ runner.temp }}/service-image/build.json
+            ${{ runner.temp }}/service-image/sbom.cdx.json
+            ${{ runner.temp }}/service-image/vulnerabilities.json
+            ${{ runner.temp }}/service-image/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90

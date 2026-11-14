@@ -279,7 +279,9 @@ class ImageWorkflowTests(unittest.TestCase):
         fake = next(step for step in steps if step.get("name") == "Extract stage fake provider from its tested image")
         self.assertEqual(fake["env"], {"IMAGE_ID": "${{ steps.image.outputs.fake_image_id }}"})
         self.assertIn('--root "$GITHUB_WORKSPACE" fake-llm "$IMAGE_ID"', fake["run"])
-        uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
+        uploads = [step for step in steps
+                   if step.get("uses", "").startswith("actions/upload-artifact@")
+                   and step["with"]["name"].startswith("stage-")]
         self.assertEqual(len(uploads), 2)
         for step in uploads:
             self.assertEqual(step["with"]["retention-days"], 30)

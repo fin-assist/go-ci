@@ -151,6 +151,64 @@ Renovate меняет pins, но не копирует `scripts/common_ci.py`. �
 
 Откат — revert коммита обновления pin в потребителе: возвращаются прежние SHA во всех местах и соответствующая им копия bootstrap одной согласованной правкой. Старое содержимое кэша не переписывается, теги не передвигаются. Правку общего правила или его откат не нужно вручную повторять в копиях конфигураций: потребители выбирают старый либо новый неизменяемый источник.
 
+## Публикация production-образов (FIN-148)
+
+`shared-image.yml` собирает образ, выполняет smoke и извлекает stage-бинарь
+из того же image ID. Для пяти production-сервисов передайте
+`prepare_production: true` в `image-check`. На push в `main` CI сохраняет
+архив основного образа и его контрольную сумму. Сборка использует права
+чтения. Вынесенная публикация сохраняет отдельный результат CI для stage.
+
+Добавьте в сервис `.github/workflows/production-image.yml`. Замените
+`<source-sha>` на полный SHA рассмотренного `go-ci` вместе с остальными pins.
+
+```yaml
+name: Publish production image
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  publish:
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    uses: fin-assist/go-ci/.github/workflows/shared-production-image.yml@<source-sha>
+    with:
+      revision: '<source-sha>'
+```
+
+Publisher сверяет событие успешного push/main, идентичность репозитория,
+путь исходного CI, статусы `go`, `lint` и `image` конкретной попытки.
+Затем он проверяет SHA, run ID, attempt и контрольные суммы скачанного
+архива, сканирует его Trivy и формирует CycloneDX SBOM. Ошибка сканера
+или уязвимость HIGH/CRITICAL блокируют публикацию. Для повтора повторите
+job публикации, пока сохранён исходный архив. Исходный CI повторять для
+этого не требуется. Если исходный CI завершился после частичного повтора,
+используйте `Re-run all jobs` для исходного CI, чтобы собрать архив
+успешной попытки. Делайте это до первой публикации этого SHA.
+Перед активацией проверьте приватность пакета и
+доступ к нему GitHub Actions сервисного репозитория. GHCR создаёт первый
+пакет с приватной видимостью. Workflow сверяет её до выдачи digest.
+
+Используется `sha-<полный SHA>`. Повтор с тем же digest идемпотентен,
+существующий тег с другим digest блокирует публикацию. Версионный тег
+`vX.Y.Z` относится к отдельному release-потоку с тегом владельца. Скопируйте
+`ghcr.io/fin-assist/<сервис>@sha256:…` из job summary в отдельный PR
+`fin-assist/infra`. Для отката укажите прежний проверенный digest.
+
+Приватный artifact `production-evidence-…` содержит SBOM, отчёт Trivy и
+provenance с digest GHCR, image ID, source CI run/attempt и контрольными
+суммами. Сохраняйте версии GHCR и доказательства, которые нужны для
+деплоя и отката. GitHub Artifact Attestation для приватного репозитория
+требует GitHub Enterprise Cloud и подключается после сверки тарифа.
+Кластеру нужен отдельный запечатанный pull secret с токеном чтения пакетов.
+
 ## Порядок перехода и приёмка
 
 1. Подготовить общий source, self-checks, карту профилей и сверку защит. Source SHA должен существовать на GitHub до запуска consumer workflow, который на него ссылается.

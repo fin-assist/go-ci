@@ -14,6 +14,8 @@ import yaml
 SOURCE = 'fin-assist/go-ci/.github/workflows/'
 QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
     'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
+PRODUCTION_MODULES = QUALITY_MODULES - {'github.com/fin-assist/go-service-template'}
+PRODUCTION_TRIGGER = {'workflow_run': {'workflows': ['CI'], 'branches': ['main'], 'types': ['completed']}}
 PUSH_TOKEN = "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"
 
 SAME_REPO = 'github.event.pull_request.head.repo.full_name == github.repository'
@@ -86,6 +88,23 @@ def suite(root, common):
             workflow = yaml.safe_load((root / '.github/workflows/ci.yml').read_text())
             self.assertEqual(workflow['permissions'], {'actions': 'read', 'contents': 'read'})
             self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds} | {'private-inputs'})
+            production_file = root / '.github/workflows/production-image.yml'
+            enabled = workflow['jobs'].get('image-check', {}).get('with', {}).get('prepare_production', False)
+            self.assertIs(type(enabled), bool)
+            self.assertEqual(production_file.is_file(), enabled)
+            if enabled:
+                self.assertEqual(manifest['profile'], 'service')
+                self.assertIn(modules[0], PRODUCTION_MODULES)
+                self.assertEqual(workflow.get('name'), PRODUCTION_TRIGGER['workflow_run']['workflows'][0])
+                self.assertEqual(workflow['jobs']['image-check']['with']['service'], modules[0].rsplit('/', 1)[1])
+                production = yaml.safe_load(production_file.read_text())
+                self.assertEqual(production.get('on', production.get(True)), PRODUCTION_TRIGGER)
+                self.assertEqual(production['permissions'], {'actions': 'read', 'contents': 'read'})
+                self.assertEqual(production['jobs'], {'publish': {
+                    'uses': SOURCE + 'shared-production-image.yml@' + manifest['revision'],
+                    'permissions': {'actions': 'read', 'contents': 'read', 'packages': 'write'},
+                    'with': {'revision': manifest['revision']},
+                }})
             discover = workflow['jobs']['private-inputs']
             self.assertEqual(discover['if'].strip(), DISCOVERY_CONDITION)
             self.assertEqual(discover['outputs'], DISCOVERY_OUTPUTS)

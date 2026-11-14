@@ -1,0 +1,165 @@
+name: Publish a tested production image
+
+on:
+  workflow_call:
+    inputs:
+      artifact_id:
+        description: Tested image artifact ID from this run and attempt
+        required: true
+        type: string
+    outputs:
+      image:
+        description: Published GHCR reference pinned by manifest digest
+        value: ${{ jobs.publish.outputs.image }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: ghcr-${{ github.repository }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - name: Validate publication context
+        env:
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          test "$GITHUB_REF_PROTECTED" = true
+          case "$GITHUB_REPOSITORY" in
+            fin-assist/analytics|fin-assist/assistant|fin-assist/bank-bff|fin-assist/bank-statement-data|fin-assist/user) ;;
+            *) exit 1 ;;
+          esac
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check the caller and existing package are private
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          test "$PRIVATE_REPOSITORY" = true
+          package="orgs/fin-assist/packages/container/${GITHUB_REPOSITORY#fin-assist/}"
+          error="$RUNNER_TEMP/ghcr-error"
+          if visibility=$(gh api "$package" --jq .visibility 2>"$error"); then
+            test "$visibility" = private
+          elif ! grep -q 'HTTP 404' "$error"; then
+            cat "$error" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: ${{ runner.temp }}/service-image
+      - name: Validate image and build evidence
+        id: validated
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          cd "$RUNNER_TEMP/service-image"
+          sha256sum --check --strict SHA256SUMS
+          image_id=$(jq -er \
+            --arg repository "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '
+              select(.repository == $repository and .source_sha == $sha and
+                     .service == ($repository | split("/") | last) and
+                     .event == "push" and .ref == "refs/heads/main" and
+                     .run_id == ($run | tonumber) and .run_attempt == ($attempt | tonumber) and
+                     .platform == "linux/amd64") |
+              .image_id | select(test("^sha256:[0-9a-f]{64}$"))
+            ' build.json)
+          tar -xOf image.tar manifest.json | jq -e 'length == 1' > /dev/null
+          docker image load --input image.tar
+          test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
+          printf 'image_id=%s\n' "$image_id" >> "$GITHUB_OUTPUT"
+      - name: Install pinned registry client
+        run: |
+          set -euo pipefail
+          # https://github.com/google/go-containerregistry/releases/tag/v0.22.1
+          tool=$(mktemp -d)
+          curl --fail --silent --show-error --location --max-time 90 \
+            'https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz' \
+            -o "$tool/crane.tar.gz"
+          printf '%s  %s\n' 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 \
+            "$tool/crane.tar.gz" | sha256sum --check --strict
+          tar -xzf "$tool/crane.tar.gz" -C "$tool" crane
+          printf '%s\n' "$tool" >> "$GITHUB_PATH"
+      - name: Publish approved image by commit and verify digest
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_ID: ${{ steps.validated.outputs.image_id }}
+        run: |
+          set -euo pipefail
+          service="${GITHUB_REPOSITORY#fin-assist/}"
+          package="orgs/fin-assist/packages/container/$service"
+          error="$RUNNER_TEMP/ghcr-error"
+          versions=$(git tag --points-at "$GITHUB_SHA" --list 'v*')
+          archive="$RUNNER_TEMP/service-image/image.tar"
+          digest=$(crane digest --tarball "$archive")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="ghcr.io/$GITHUB_REPOSITORY"
+          tags=("sha-$GITHUB_SHA")
+          while IFS= read -r version; do
+            if [[ "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              tags+=("$version")
+            fi
+          done <<< "$versions"
+
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          declare -a missing=()
+          for tag in "${tags[@]}"; do
+            if existing=$(crane digest "$image:$tag" 2>"$error"); then
+              test "$existing" = "$digest" || {
+                printf 'Immutable tag already points to another digest: %s\n' "$tag" >&2
+                exit 1
+              }
+            elif grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN' "$error"; then
+              missing+=("$tag")
+            else
+              cat "$error" >&2
+              exit 1
+            fi
+          done
+          if [[ "${missing[0]+set}" == set ]]; then
+            for tag in "${missing[@]}"; do
+              crane push "$archive" "$image:$tag"
+            done
+          fi
+          for tag in "${tags[@]}"; do
+            test "$(crane digest "$image:$tag")" = "$digest"
+          done
+          test "$(crane manifest "$image@$digest" | jq -er .config.digest)" = "$IMAGE_ID"
+          test "$(gh api "$package" --jq .visibility)" = private
+          jq --arg image "$image@$digest" --arg workflow "$GITHUB_WORKFLOW_REF" \
+            '. + {image: $image, workflow: $workflow}' "$RUNNER_TEMP/service-image/build.json" \
+            > "$RUNNER_TEMP/service-image/provenance.json"
+          printf 'image=%s@%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
+          printf 'GHCR digest for the infra PR: `%s@%s`\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: production-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/service-image/provenance.json
+            ${{ runner.temp }}/service-image/sbom.cdx.json
+            ${{ runner.temp }}/service-image/vulnerabilities.json
+          if-no-files-found: error
+          retention-days: 30

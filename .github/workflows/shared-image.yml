@@ -20,9 +20,17 @@ on:
         required: false
         default: false
         type: boolean
+      prepare_production:
+        description: Export and scan the tested primary image on main pushes
+        default: false
+        type: boolean
     secrets:
       GO_MODULES_TOKEN:
         required: false
+    outputs:
+      production_artifact_id:
+        description: Same-run artifact containing the scanned image and its evidence
+        value: ${{ jobs.image.outputs.production_artifact_id }}
 
 permissions:
   actions: read
@@ -32,6 +40,8 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      production_artifact_id: ${{ steps.production.outputs.artifact-id }}
     env:
       SERVICE: ${{ inputs.service }}
       CI_REVISION: ${{ inputs.revision }}
@@ -112,3 +122,45 @@ jobs:
           path: fake-llm-artifact/
           retention-days: 30
           if-no-files-found: error
+      - name: Scan and export the tested production image
+        if: inputs.prepare_production && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE_ID: ${{ steps.image.outputs.image_id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "fin-assist/$SERVICE"
+          case "$SERVICE" in
+            analytics|assistant|bank-bff|bank-statement-data|user) ;;
+            *) exit 1 ;;
+          esac
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -m 700 "$RUNNER_TEMP/service-image"
+          archive="$RUNNER_TEMP/service-image/image.tar"
+          docker image save --output "$archive" "$IMAGE_ID"
+          cp stage-artifact/manifest.json "$RUNNER_TEMP/service-image/build.json"
+
+          # https://github.com/aquasecurity/trivy/releases/tag/v0.76.0
+          tool=$(mktemp -d)
+          curl --fail --silent --show-error --location --max-time 90 \
+            'https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz' \
+            -o "$tool/trivy.tar.gz"
+          printf '%s  %s\n' e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7 \
+            "$tool/trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf "$tool/trivy.tar.gz" -C "$tool" trivy
+          "$tool/trivy" image --timeout 5m --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+            --input "$archive" --format json --output "$RUNNER_TEMP/service-image/vulnerabilities.json"
+          "$tool/trivy" image --timeout 5m --scanners vuln --skip-db-update --skip-java-db-update \
+            --input "$archive" --format cyclonedx --output "$RUNNER_TEMP/service-image/sbom.cdx.json"
+          (
+            cd "$RUNNER_TEMP/service-image"
+            sha256sum image.tar build.json vulnerabilities.json sbom.cdx.json > SHA256SUMS
+          )
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        id: production
+        if: inputs.prepare_production && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: production-image-${{ inputs.service }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service-image/
+          retention-days: 2
+          if-no-files-found: error
+          compression-level: 0

@@ -86,6 +86,12 @@ class ManifestTests(unittest.TestCase):
 
 class CacheTests(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        # Consumers load this suite with the real workflow SHA in their environment.
+        # Each temporary repository here has its own independent manifest revision.
+        os.environ.pop("FINASSIST_CI_REVISION", None)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

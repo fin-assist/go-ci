@@ -180,7 +180,7 @@ class QualityCommandsTests(QualityFixture):
         with patch.dict(os.environ, {'GOTOOLCHAIN': 'local'}), patch.object(QUALITY, 'run') as invoke:
             QUALITY.check(self.root, 'service', 'unit')
         command = invoke.call_args.args[1]
-        self.assertEqual(command[:3], ['go', 'run', 'github.com/vladopajic/go-test-coverage/v2@v2.20.1'])
+        self.assertEqual(command[:3], ['go', 'run', 'github.com/vladopajic/go-test-coverage/v2@v2.23.0'])
         self.assertEqual(command[command.index('--config') + 1], '.testcoverage.yml')
         self.assertEqual(invoke.call_args.kwargs['env']['GOTOOLCHAIN'], 'auto')
         with patch.object(QUALITY, 'run', side_effect=QUALITY.Failed('threshold', 9)):

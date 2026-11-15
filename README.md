@@ -15,7 +15,7 @@ FIN-457: [тесты и coverage](docs/shared-quality.md), [stage-артефак
 
 ## Проверка источника
 
-Нужны Python3.11+ с `pip install -r requirements-dev.txt`, Go1.26+ с `GOTOOLCHAIN=auto`, Node22/npm и Git. Первый запуск инструментов требует сети; offline-проверка дополнительно требует заполненных Go/npm-кэшей. У source нет production Go-кода: независимые unit/integration/API total80 проверяются в настоящих потребителях, а здесь проверяются policy/helpers и реальные инструменты.
+Нужны Python3.11+ с `pip install -r requirements-dev.txt`, Go1.27.4+ с `GOTOOLCHAIN=auto`, Node22/npm и Git. Первый запуск инструментов требует сети; offline-проверка дополнительно требует заполненных Go/npm-кэшей. У source нет production Go-кода: независимые unit/integration/API total80 проверяются в настоящих потребителях, а здесь проверяются policy/helpers и реальные инструменты.
 
 ```sh
 make test

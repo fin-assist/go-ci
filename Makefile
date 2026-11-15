@@ -10,7 +10,7 @@ policy-test: ## Renovate controller regression cases, without credentials or net
 
 # actionlint #657: GitHub supports concurrency.queue; its linter does not yet parse it.
 lint: ## reusable workflow syntax
-	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck='' -pyflakes='' -ignore '^unexpected key "queue" for "concurrency" section'
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck='' -pyflakes='' -ignore '^unexpected key "queue" for "concurrency" section'
 
 probe: ## actual accepted and rejected Go/SQL lint cases
 	$(PYTHON) -B common/probe_lint.py

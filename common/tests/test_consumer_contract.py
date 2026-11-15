@@ -90,6 +90,7 @@ class ConsumerContractTests(unittest.TestCase):
     def test_production_publisher_requires_supported_service_and_exact_caller(self):
         path = self.root / '.github/workflows/production-image.yml'
         publisher = {
+            'if': CONTRACT.PUBLISH_CONDITION,
             'uses': CONTRACT.SOURCE + 'shared-production-image.yml@' + PIN,
             'permissions': {'actions': 'read', 'contents': 'read', 'packages': 'write'},
             'with': {'revision': PIN},
@@ -100,10 +101,12 @@ class ConsumerContractTests(unittest.TestCase):
             ('user', {'with': {'revision': 'b' * 40}}, False),
             ('user', {'permissions': {'contents': 'write', 'packages': 'write'}}, False),
             ('user', {'secrets': 'inherit'}, False),
+            ('user', {'if': 'true'}, False),
+            ('user', {'if': CONTRACT.PUBLISH_CONDITION.rsplit(' && ', 1)[0]}, False),
         ]:
             with self.subTest(module=module, changes=changes):
                 document = self.fixture(module='github.com/fin-assist/' + module)
-                document['jobs']['image-check']['with'].update(service=module, prepare_production=True)
+                document['jobs']['image-check']['with'].update(service=module, prepare_production=CONTRACT.PREPARE_PRODUCTION)
                 path.write_text(yaml.safe_dump({
                     'on': CONTRACT.PRODUCTION_TRIGGER,
                     'permissions': {'actions': 'read', 'contents': 'read'},
@@ -112,13 +115,16 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertEqual(self.result(document).wasSuccessful(), valid)
         document = self.fixture()
         self.assertFalse(self.result(document).wasSuccessful())
-        document['jobs']['image-check']['with'].update(service='user', prepare_production=True)
+        document['jobs']['image-check']['with'].update(service='user', prepare_production=CONTRACT.PREPARE_PRODUCTION)
         path.write_text(yaml.safe_dump({
             'on': CONTRACT.PRODUCTION_TRIGGER,
             'permissions': {'actions': 'read', 'contents': 'read'},
             'jobs': {'publish': publisher},
         }))
         self.assertTrue(self.result(document).wasSuccessful())
+        document['jobs']['image-check']['with']['prepare_production'] = True
+        self.assertFalse(self.result(document).wasSuccessful())
+        document['jobs']['image-check']['with']['prepare_production'] = CONTRACT.PREPARE_PRODUCTION
         document['name'] = 'Go CI'
         self.assertFalse(self.result(document).wasSuccessful())
         path.unlink()

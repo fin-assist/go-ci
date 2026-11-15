@@ -107,7 +107,8 @@ class PrivateInputRestoreTests(unittest.TestCase):
         step = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "attempt")
         repository = "fin-assist/assistant"
         allowed = {"full_name": repository}
-        shared = {"path": "fin-assist/go-ci/.github/workflows/shared-go.yml@refs/heads/main", "sha": BASE}
+        shared = {"path": "fin-assist/go-ci/.github/workflows/shared-go.yml@refs/heads/main",
+                  "ref": "refs/heads/main", "sha": BASE}
         details = {"event": "pull_request", "path": ".github/workflows/ci.yml",
                    "repository": allowed, "head_repository": allowed, "head_sha": SHA,
                    "head_branch": "tooling/update", "referenced_workflows": [shared]}
@@ -159,6 +160,8 @@ class PrivateInputRestoreTests(unittest.TestCase):
                 ({"head_repository": {"full_name": "fork/assistant"}}, [pull]),
                 ({"path": ".github/workflows/other.yml"}, [pull]),
                 ({"referenced_workflows": [shared, shared | {"sha": SHA}]}, [pull]),
+                ({"referenced_workflows": [shared | {"path": shared["path"].replace("refs/heads/main", "main"),
+                                                      "ref": "refs/tags/main"}]}, [pull]),
                 ({"referenced_workflows": [shared | {"path": shared["path"].replace("refs/heads/", "refs/tags/")}]}, [pull]),
                 ({}, []), ({}, [pull, pull]),
             ):

@@ -30,12 +30,12 @@ jobs:
           node-version: 26
       - name: Script dependencies
         run: python3 -m pip install -r requirements-dev.txt
+      - name: Rebuild an image with different input timestamps
+        timeout-minutes: 5
+        run: python3 -B common/probe_image_reproducibility.py
       - name: Shared source tests
         run: make test
       - name: Actual accepted and rejected linter cases
         run: make probe
-      - name: Rebuild an image with different input timestamps
-        timeout-minutes: 3
-        run: python3 -B common/probe_image_reproducibility.py
       - name: Reusable workflow syntax
         run: make lint

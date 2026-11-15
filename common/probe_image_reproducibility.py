@@ -6,7 +6,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
-from image_smoke import command, content_id, reproducible_build
+from image_smoke import command, content_id, image_builder, reproducible_build
 
 
 def main():
@@ -20,8 +20,9 @@ def main():
         for index, mtime in enumerate((epoch + 60, epoch + 120)):
             os.utime(fixture, (mtime, mtime))
             tag = f"go-ci-reproducible-image:{index}"
-            command(reproducible_build(str(epoch)) + ["--no-cache", "-t", tag, directory],
-                    timeout=60, capture=False)
+            with image_builder() as builder:
+                command(reproducible_build(str(epoch), builder) + ["--no-cache", "-t", tag, directory],
+                        timeout=100, capture=False)
             images.append(content_id(tag, command))
         if images[0] != images[1]:
             raise SystemExit(f"Independent image builds produced different IDs: {images}")

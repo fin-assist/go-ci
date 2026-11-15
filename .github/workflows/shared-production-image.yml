@@ -114,10 +114,15 @@ jobs:
                      .platform == "linux/amd64") |
               .image_id | select(test("^sha256:[0-9a-f]{64}$"))
             ' build.json)
-          tar -xOf image.tar manifest.json | jq -e 'length == 1' > /dev/null
+          config_path=$(tar -xOf image.tar manifest.json | jq -er '
+            select(type == "array" and length == 1) | .[0].Config | strings | select(length > 0)
+          ')
+          # Docker can serialize a different config when saving a tested image.
+          # Crane publishes the saved config bytes, so use their digest for GHCR.
+          config_hash=$(tar -xOf image.tar -- "$config_path" | sha256sum | cut -d ' ' -f 1)
           docker image load --input image.tar
           test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
-          printf 'image_id=%s\n' "$image_id" >> "$GITHUB_OUTPUT"
+          printf 'config_digest=sha256:%s\n' "$config_hash" >> "$GITHUB_OUTPUT"
       - name: Scan image and generate SBOM
         run: |
           set -euo pipefail
@@ -156,7 +161,7 @@ jobs:
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGE_ID: ${{ steps.validated.outputs.image_id }}
+          ARCHIVE_CONFIG_DIGEST: ${{ steps.validated.outputs.config_digest }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           PUBLISHER_SHA: ${{ inputs.revision }}
         run: |
@@ -185,13 +190,29 @@ jobs:
             cat "$error" >&2
             exit 1
           fi
-          test "$(crane digest "$target")" = "$digest"
-          test "$(crane manifest "$image@$digest" | jq -er .config.digest)" = "$IMAGE_ID"
-          test "$(gh api "$package" --jq .visibility)" = private
+          published_digest=$(crane digest "$target")
+          if [[ "$published_digest" != "$digest" ]]; then
+            printf 'Published manifest digest mismatch for %s: expected %s, got %s\n' \
+              "$target" "$digest" "$published_digest" >&2
+            exit 1
+          fi
+          published_config_digest=$(crane manifest "$image@$digest" | jq -er .config.digest)
+          if [[ "$published_config_digest" != "$ARCHIVE_CONFIG_DIGEST" ]]; then
+            printf 'Published config digest mismatch for %s: expected %s, got %s\n' \
+              "$target" "$ARCHIVE_CONFIG_DIGEST" "$published_config_digest" >&2
+            exit 1
+          fi
+          visibility=$(gh api "$package" --jq .visibility)
+          if [[ "$visibility" != private ]]; then
+            printf 'Published package is not private: %s (%s)\n' "$package" "$visibility" >&2
+            exit 1
+          fi
           sha256sum image.tar build.json sbom.cdx.json vulnerabilities.json > SHA256SUMS
           jq --arg image "$image@$digest" --arg workflow "$GITHUB_WORKFLOW_REF" \
-            --arg publisher "$PUBLISHER_SHA" --rawfile checksums SHA256SUMS \
-            '. + {image: $image, workflow: $workflow, publisher_sha: $publisher, checksums: $checksums}' \
+            --arg publisher "$PUBLISHER_SHA" --arg config_digest "$ARCHIVE_CONFIG_DIGEST" \
+            --rawfile checksums SHA256SUMS \
+            '. + {image: $image, config_digest: $config_digest, workflow: $workflow,
+                  publisher_sha: $publisher, checksums: $checksums}' \
             build.json > provenance.json
           printf 'image=%s@%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
           printf 'GHCR digest for the infra PR: `%s@%s`\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"

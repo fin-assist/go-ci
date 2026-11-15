@@ -208,7 +208,8 @@ job публикации, пока сохранён исходный архив.
 `fin-assist/infra`. Для отката укажите прежний проверенный digest.
 
 Приватный artifact `production-evidence-…` содержит SBOM, отчёт Trivy и
-provenance с digest GHCR, image ID, source CI run/attempt и контрольными
+provenance с digest GHCR, digest конфигурации из архива, Docker image ID,
+source CI run/attempt и контрольными
 суммами. Сохраняйте версии GHCR и доказательства, которые нужны для
 деплоя и отката. GitHub Artifact Attestation для приватного репозитория
 требует GitHub Enterprise Cloud и подключается после сверки тарифа.

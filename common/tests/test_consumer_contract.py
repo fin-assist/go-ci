@@ -122,6 +122,17 @@ class ConsumerContractTests(unittest.TestCase):
             'jobs': {'publish': publisher},
         }))
         self.assertTrue(self.result(document).wasSuccessful())
+        path.write_text(yaml.safe_dump({
+            'on': CONTRACT.PRODUCTION_TRIGGER,
+            'permissions': {'actions': 'read', 'contents': 'read'},
+            'jobs': {'publish': {key: value for key, value in publisher.items() if key != 'if'}},
+        }))
+        self.assertFalse(self.result(document).wasSuccessful())
+        path.write_text(yaml.safe_dump({
+            'on': CONTRACT.PRODUCTION_TRIGGER,
+            'permissions': {'actions': 'read', 'contents': 'read'},
+            'jobs': {'publish': publisher},
+        }))
         document['jobs']['image-check']['with']['prepare_production'] = True
         self.assertFalse(self.result(document).wasSuccessful())
         document['jobs']['image-check']['with']['prepare_production'] = CONTRACT.PREPARE_PRODUCTION

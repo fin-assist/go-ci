@@ -17,6 +17,8 @@ WORKFLOWS = Path(__file__).resolve().parents[2] / ".github/workflows"
 SHA = "a" * 40
 IMAGE_ID = "sha256:" + "b" * 64
 DIGEST = "sha256:" + "c" * 64
+SAVED_CONFIG = b'{"architecture":"amd64","os":"linux"}'
+CONFIG_DIGEST = "sha256:" + hashlib.sha256(SAVED_CONFIG).hexdigest()
 
 
 def workflow(name):
@@ -170,6 +172,7 @@ printf 'tampered data' > "$2"
             ("wrong service", {"service": "user"}, None, IMAGE_ID, False),
             ("tag instead of ID", {"image_id": "analytics:latest"}, None, "analytics:latest", False),
             ("multiple images", {}, None, IMAGE_ID, False),
+            ("missing config blob", {}, None, IMAGE_ID, False),
             ("changed image", {}, "image.tar", IMAGE_ID, False),
             ("changed metadata", {}, "build.json", IMAGE_ID, False),
             ("wrong loaded ID", {}, None, DIGEST, False),
@@ -180,11 +183,19 @@ printf 'tampered data' > "$2"
                 artifact = root / "service-image"
                 artifact.mkdir()
                 archive = artifact / "image.tar"
+                config_path = "blobs/sha256/" + CONFIG_DIGEST.removeprefix("sha256:")
                 with tarfile.open(archive, "w") as image:
                     entry = tarfile.TarInfo("manifest.json")
-                    manifest = b"[{}, {}]" if name == "multiple images" else b"[{}]"
+                    rows = [{"Config": config_path}]
+                    if name == "multiple images":
+                        rows += rows
+                    manifest = json.dumps(rows).encode()
                     entry.size = len(manifest)
                     image.addfile(entry, io.BytesIO(manifest))
+                    if name != "missing config blob":
+                        entry = tarfile.TarInfo(config_path)
+                        entry.size = len(SAVED_CONFIG)
+                        image.addfile(entry, io.BytesIO(SAVED_CONFIG))
                 build = {"repository": "fin-assist/analytics", "service": "analytics",
                          "run_id": 15, "run_attempt": 1, "source_sha": SHA, "event": "push",
                          "ref": "refs/heads/main", "platform": "linux/amd64", "image_id": IMAGE_ID}
@@ -204,7 +215,7 @@ printf 'tampered data' > "$2"
                                         timeout=5, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 if accepted:
-                    self.assertEqual((root / "output").read_text(), f"image_id={IMAGE_ID}\n")
+                    self.assertEqual((root / "output").read_text(), f"config_digest={CONFIG_DIGEST}\n")
                 else:
                     self.assertFalse((root / "output").exists())
 
@@ -213,12 +224,12 @@ printf 'tampered data' > "$2"
         preflight = next(step["run"] for step in steps if step["name"] == "Check the caller and existing package are private")
         publish = next(step["run"] for step in steps if step.get("id") == "publish")
         cases = [
-            ("retry after push", "private", "matching", IMAGE_ID, [], True),
-            ("new", "private", "missing", IMAGE_ID, ["sha-" + SHA], True),
-            ("tag conflict", "private", "conflict", IMAGE_ID, [], False),
-            ("wrong config digest", "private", "missing", DIGEST, ["sha-" + SHA], False),
-            ("registry denied", "private", "denied", IMAGE_ID, [], False),
-            ("public package", "public", "missing", IMAGE_ID, [], False),
+            ("retry after push", "private", "matching", CONFIG_DIGEST, [], True),
+            ("new", "private", "missing", CONFIG_DIGEST, ["sha-" + SHA], True),
+            ("tag conflict", "private", "conflict", CONFIG_DIGEST, [], False),
+            ("Docker ID used as config digest", "private", "missing", IMAGE_ID, ["sha-" + SHA], False),
+            ("registry denied", "private", "denied", CONFIG_DIGEST, [], False),
+            ("public package", "public", "missing", CONFIG_DIGEST, [], False),
         ]
         for name, visibility, source_tag, config_digest, pushed, passed in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -260,6 +271,7 @@ esac
                        "GITHUB_ACTOR": "test", "GITHUB_WORKFLOW_REF": "main",
                        "GITHUB_OUTPUT": str(root / "output"), "GITHUB_STEP_SUMMARY": str(root / "summary"),
                        "PRIVATE_REPOSITORY": "true", "VISIBILITY": visibility, "IMAGE_ID": IMAGE_ID, "DIGEST": DIGEST,
+                       "ARCHIVE_CONFIG_DIGEST": CONFIG_DIGEST,
                        "SOURCE_TAG": source_tag, "CONFIG_DIGEST": config_digest, "PUBLISHER_SHA": SHA, "CALLS": str(call_log)}
                 result = subprocess.run(["bash", "-e", "-c", preflight + publish], env=env,
                                         timeout=5, capture_output=True, text=True)
@@ -270,6 +282,7 @@ esac
                                   (root / "output").read_text())
                     evidence = json.loads((artifact / "provenance.json").read_text())
                     self.assertEqual(evidence["publisher_sha"], SHA)
+                    self.assertEqual(evidence["config_digest"], CONFIG_DIGEST)
                     for item in ("image.tar", "build.json", "sbom.cdx.json", "vulnerabilities.json"):
                         expected = hashlib.sha256((artifact / item).read_bytes()).hexdigest()
                         self.assertIn(f"{expected}  {item}\n", evidence["checksums"])

@@ -1,7 +1,7 @@
 # Общий runner тестов и coverage (FIN-457, первая итерация)
 
 `common/scripts/quality.py` переносит механизм suite inventory, сбора и проверки evidence,
-запуска закреплённого `go-test-coverage/v2@v2.20.1` и информационного combined.
+запуска закреплённого `go-test-coverage/v2@v2.23.0` и информационного combined.
 Сервис сохраняет `go.mod`, `.testcoverage.yml`, `.finassist-ci.json`, доменные fixtures,
 команды build/run/dev/migrate, tidy/vet и пока локальные script/CHANGELOG проверки.
 Эта итерация не переносит stage/release tooling и не подключает библиотеки неявно.

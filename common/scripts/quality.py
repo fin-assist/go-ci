@@ -15,7 +15,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bootstrap import read_config, unique_object
 
-ANALYZER = 'github.com/vladopajic/go-test-coverage/v2@v2.20.1'
+ANALYZER = 'github.com/vladopajic/go-test-coverage/v2@v2.23.0'
 # Match the existing shared Go job budget; Go's -timeout applies per test binary.
 GO_PROCESS_TIMEOUT = 45 * 60
 LEVELS = ('unit', 'integration', 'api')

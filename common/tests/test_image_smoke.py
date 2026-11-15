@@ -20,6 +20,9 @@ SPEC.loader.exec_module(IMAGE)
 SHA = "a" * 40
 IMAGE_ID = "sha256:" + "b" * 64
 FAKE_ID = "sha256:" + "c" * 64
+SOURCE_EPOCH = "1700000000"
+BUILD = ["docker", "build", "--output", "type=docker,rewrite-timestamp=true", "--provenance=false",
+         "--build-arg", "SOURCE_DATE_EPOCH=" + SOURCE_EPOCH]
 
 
 class Runner:
@@ -32,6 +35,8 @@ class Runner:
 
     def __call__(self, arguments, **options):
         self.calls.append((arguments, options))
+        if arguments[:2] == ["git", "show"]:
+            return SOURCE_EPOCH + "\n"
         if arguments[:3] == ["docker", "image", "inspect"]:
             return FAKE_ID if arguments[-1] == "fake-llm:ci" else IMAGE_ID
         if arguments[-1] == "help":
@@ -75,9 +80,9 @@ class ImageSmokeTests(unittest.TestCase):
                 run = Runner()
                 image = IMAGE.build_images(service, False, SHA, environ={}, run=run)
                 self.assertEqual(image, ("service" if service == "user" else service) + ":ci")
-                build = run.calls[0]
-                self.assertEqual(build[0], ["docker", "build", "--build-arg", "VERSION=" + SHA,
-                                             "-t", image, "."])
+                self.assertEqual(run.calls[0], (["git", "show", "-s", "--format=%ct", SHA], {"timeout": 10}))
+                build = run.calls[1]
+                self.assertEqual(build[0], BUILD + ["--build-arg", "VERSION=" + SHA, "-t", image, "."])
                 self.assertEqual(build[1]["timeout"], 600)
                 self.assertIn((["docker", "run", "--rm", IMAGE_ID, "help"], {"expected": 2}), run.calls)
 
@@ -85,8 +90,8 @@ class ImageSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="cache with spaces ") as cache:
             runner = Runner()
             IMAGE.build_images("assistant", True, SHA, environ={"FINASSIST_GO_MODULE_CACHE": cache}, run=runner)
-            self.assertEqual(runner.calls[0][0], [
-                "docker", "build", "--build-context", "go-module-cache=" + cache,
+            self.assertEqual(runner.calls[1][0], BUILD + [
+                "--build-context", "go-module-cache=" + cache,
                 "--build-arg", "VERSION=" + SHA, "-t", "assistant:ci", ".",
             ])
         for remote in ("https://example.org", "docker-image://example.org", "/nonexistent/cache"):
@@ -141,6 +146,8 @@ class ImageSmokeTests(unittest.TestCase):
                 paths = []
 
                 def run(arguments, **options):
+                    if arguments[:2] == ["git", "show"]:
+                        return SOURCE_EPOCH
                     if arguments[:2] == ["docker", "build"]:
                         value = arguments[arguments.index("--secret") + 1]
                         path = Path(value.removeprefix("id=netrc,src="))
@@ -163,6 +170,8 @@ class ImageSmokeTests(unittest.TestCase):
 
     def test_missing_help_output_fails_before_artifact_can_be_created(self):
         def run(arguments, **options):
+            if arguments[:2] == ["git", "show"]:
+                return SOURCE_EPOCH
             return IMAGE_ID if arguments[:3] == ["docker", "image", "inspect"] else "unrelated output"
 
         with self.assertRaisesRegex(RuntimeError, "usage:"):

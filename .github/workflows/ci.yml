@@ -34,5 +34,8 @@ jobs:
         run: make test
       - name: Actual accepted and rejected linter cases
         run: make probe
+      - name: Rebuild an image with different input timestamps
+        timeout-minutes: 3
+        run: python3 -B common/probe_image_reproducibility.py
       - name: Reusable workflow syntax
         run: make lint

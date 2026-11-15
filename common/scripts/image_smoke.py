@@ -67,6 +67,14 @@ def content_id(image, run):
     return identity
 
 
+def reproducible_build(epoch):
+    """Normalize image config and layer timestamps on the local Docker exporter."""
+    if not re.fullmatch(r"[0-9]+", epoch):
+        raise ValueError("expected a Unix source timestamp")
+    return ["docker", "build", "--output", "type=docker,rewrite-timestamp=true",
+            "--provenance=false", "--build-arg", "SOURCE_DATE_EPOCH=" + epoch]
+
+
 def build_images(service, fake_llm, revision, *, environ=os.environ, run=command, image_ids=None):
     """Return the tested primary image tag; stage packaging uses that exact image."""
     if service not in SERVICES:
@@ -77,14 +85,15 @@ def build_images(service, fake_llm, revision, *, environ=os.environ, run=command
         raise ValueError("expected full source SHA")
     # user historically builds service:ci; its extracted binary is still named user.
     image = ("service" if service == "user" else service) + ":ci"
+    cache = environ.get("FINASSIST_GO_MODULE_CACHE")
+    if cache and (not Path(cache).is_absolute() or not Path(cache).is_dir()):
+        raise ValueError("expected a local directory for the prepared Go module cache")
+    epoch = run(["git", "show", "-s", "--format=%ct", revision], timeout=10).strip()
+    arguments = reproducible_build(epoch)
+    if cache:
+        arguments.extend(["--build-context", "go-module-cache=" + cache])
     secret_path = None
     try:
-        arguments = ["docker", "build"]
-        cache = environ.get("FINASSIST_GO_MODULE_CACHE")
-        if cache:
-            if not Path(cache).is_absolute() or not Path(cache).is_dir():
-                raise ValueError("expected a local directory for the prepared Go module cache")
-            arguments.extend(["--build-context", "go-module-cache=" + cache])
         token = environ.get("GO_MODULES_TOKEN", "")
         if token:
             with tempfile.NamedTemporaryFile(mode="w", prefix="finassist-netrc-", delete=False,

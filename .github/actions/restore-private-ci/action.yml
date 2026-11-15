@@ -30,9 +30,13 @@ runs:
         test "$GITHUB_EVENT_NAME" = pull_request
         test "$HEAD_REPO" = "$GITHUB_REPOSITORY"
         [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || exit 1
-        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-        expected="private-ci-$HEAD_SHA-$BASE_SHA"
-        if [ "$BRANCH_MODE" = true ]; then expected="$expected-$REVISION"; fi
+        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+        if [ "$BRANCH_MODE" = true ]; then
+          expected="private-ci-source-$HEAD_SHA-$REVISION"
+        else
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          expected="private-ci-$HEAD_SHA-$BASE_SHA"
+        fi
         test "$ARTIFACT" = "$expected"
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
       with:

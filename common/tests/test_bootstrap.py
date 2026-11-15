@@ -68,6 +68,17 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pins differ"):
                 bootstrap.resolve_revision(self.root, self.config)
 
+    def test_branch_lookup_ignores_global_url_rewrites(self):
+        target = "https://example.invalid/fake/"
+        (self.root / ".gitconfig").write_text(f'[url "{target}"]\n    insteadOf = {bootstrap.SOURCE_URL}\n')
+        env = {"GIT_CONFIG_GLOBAL": str(self.root / ".gitconfig")}
+        with mock.patch.dict(os.environ, env):
+            ordinary = subprocess.check_output(["git", "ls-remote", "--get-url", bootstrap.SOURCE_URL],
+                                               cwd=self.root, text=True, timeout=5).strip()
+            self.assertEqual(ordinary, target)
+            actual = bootstrap.git(self.root, "ls-remote", "--get-url", bootstrap.SOURCE_URL)
+            self.assertEqual(actual, bootstrap.SOURCE_URL)
+
     def test_missing_manifest_fails(self):
         with self.assertRaises(OSError):
             bootstrap.read_config(self.root)

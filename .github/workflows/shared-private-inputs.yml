@@ -70,11 +70,19 @@ jobs:
                    (.path == ".github/workflows/ci.yml" or .path == ".github/workflows/qase90.yml")) |
             . as $run |
             [.referenced_workflows[]? | select(.path |
-              test("^fin-assist/go-ci/\\.github/workflows/shared-(go|lint|api|migrations|image|private-discovery|qase90)\\.yml@refs/heads/main$")) |
-              .sha] as $refs |
-            select(($refs | unique | length) == 1) |
-            [$run.head_sha, $run.head_branch, $refs[0]] | @tsv
+              test("^fin-assist/go-ci/\\.github/workflows/shared-(go|lint|api|migrations|image|private-discovery|qase90)\\.yml@"))] as $shared |
+            if ($shared | length) > 0 and all($shared[]; .path | test("@[0-9a-f]{40}$")) then
+              "legacy"
+            else
+              [$shared[] | select(.path | endswith("@refs/heads/main")) | .sha] as $refs |
+              select(($refs | length) == ($shared | length) and ($refs | unique | length) == 1) |
+              [$run.head_sha, $run.head_branch, $refs[0]] | @tsv
+            end
           ' <<< "$details")
+          if [ "$identity" = legacy ]; then
+            echo 'This pinned CI attempt uses the pull_request_target preparation.'
+            exit 0
+          fi
           IFS=$'\t' read -r head branch revision <<< "$identity"
           [[ "$head" =~ ^[0-9a-f]{40}$ && "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
           number=$(timeout 35s gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
@@ -87,6 +95,7 @@ jobs:
           printf 'number=%s\nhead=%s\nrevision=%s\n' "$number" "$head" "$revision" >> "$GITHUB_OUTPUT"
       - name: Resolve the open pull request
         id: pull
+        if: github.event_name != 'workflow_run' || steps.attempt.outputs.revision != ''
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ github.event.pull_request.number || steps.attempt.outputs.number || inputs.pull_request_number }}
@@ -112,7 +121,7 @@ jobs:
           fi
           printf 'head=%s\nbase=%s\ntarget=%s\n' "$head" "$base" "$target" >> "$GITHUB_OUTPUT"
       - name: Require a protected release target
-        if: steps.pull.outputs.target != 'main'
+        if: steps.pull.outputs.head != '' && steps.pull.outputs.target != 'main'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REF: ${{ steps.pull.outputs.target }}
@@ -122,6 +131,7 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected)" = true
       - name: Read Go manifests as data from the exact PR head
         id: manifests
+        if: steps.pull.outputs.head != ''
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pull.outputs.head }}
@@ -154,6 +164,9 @@ jobs:
           profile = os.environ["PROFILE"]
           if profile not in {"service", "library"} or manifest["profile"] != profile:
               raise SystemExit("The consumer CI profile and pull request manifest differ.")
+          if os.environ["GITHUB_EVENT_NAME"] == "pull_request_target" and "revision" not in manifest:
+              print("This branch-backed PR uses workflow_run preparation.")
+              raise SystemExit(0)
           attempt = os.environ["ATTEMPT_REVISION"]
           revision = attempt or manifest.get("revision", "")
           if attempt and "revision" in manifest:
@@ -164,6 +177,7 @@ jobs:
               print(f"revision={revision}", file=output)
           PY
       - name: Verify the requested go-ci commit
+        if: steps.manifests.outputs.revision != ''
         env:
           GH_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           SOURCE_SHA: ${{ steps.manifests.outputs.revision }}
@@ -176,6 +190,7 @@ jobs:
           [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
           test "$(gh api "repos/fin-assist/go-ci/compare/$SOURCE_SHA...$main_sha" --jq .merge_base_commit.sha)" = "$SOURCE_SHA"
       - name: Checkout trusted preparation scripts
+        if: steps.manifests.outputs.revision != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
@@ -184,6 +199,7 @@ jobs:
           path: .finassist-ci/trusted-preparation
           persist-credentials: false
       - name: Checkout requested go-ci commit as data
+        if: steps.manifests.outputs.revision != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
@@ -193,14 +209,14 @@ jobs:
           persist-credentials: false
       - name: Prepare the pinned Qase 90 neighbors
         id: qase90
-        if: inputs.qase90_bsd_revision != '' || inputs.qase90_analytics_revision != ''
+        if: steps.manifests.outputs.revision != '' && (inputs.qase90_bsd_revision != '' || inputs.qase90_analytics_revision != '')
         uses: ./.finassist-ci/trusted-preparation/.github/actions/prepare-qase90
         with:
           bsd-revision: ${{ inputs.qase90_bsd_revision }}
           analytics-revision: ${{ inputs.qase90_analytics_revision }}
           read-token: ${{ secrets.GO_MODULES_TOKEN }}
       - name: Read immutable manifests from the published library baselines
-        if: inputs.profile == 'library'
+        if: steps.manifests.outputs.revision != '' && (inputs.profile == 'library')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -224,10 +240,12 @@ jobs:
             fi
           done < "$output/library-baselines.txt"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        if: steps.manifests.outputs.revision != ''
         with:
           go-version: '1.27.x'
           cache: false
       - name: Package the source commit
+        if: steps.manifests.outputs.revision != ''
         env:
           SOURCE_SHA: ${{ steps.manifests.outputs.revision }}
         run: |
@@ -237,6 +255,7 @@ jobs:
             --directory "$RUNNER_TEMP/private-ci-input" --revision "$SOURCE_SHA" \
             --manifest "$RUNNER_TEMP/private-ci-output/manifest.json"
       - name: Prefetch checksum-locked private modules
+        if: steps.manifests.outputs.revision != ''
         env:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           ALLOWED_REPOSITORIES: ${{ inputs.allowed_module_repositories }}
@@ -260,8 +279,12 @@ jobs:
             --go-mod "$input/go.mod" --go-sum "$input/go.sum" --output "$output/proxy" \
             --allowed-repositories "$ALLOWED_REPOSITORIES" "${options[@]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.manifests.outputs.revision != ''
         with:
-          name: private-ci-${{ steps.pull.outputs.head }}-${{ steps.pull.outputs.base }}${{ steps.attempt.outputs.revision != '' && format('-{0}', steps.attempt.outputs.revision) || '' }}
+          name: >-
+            ${{ steps.attempt.outputs.revision != '' &&
+                format('private-ci-source-{0}-{1}', steps.pull.outputs.head, steps.attempt.outputs.revision) ||
+                format('private-ci-{0}-{1}', steps.pull.outputs.head, steps.pull.outputs.base) }}
           path: ${{ runner.temp }}/private-ci-output/
           retention-days: 5
           if-no-files-found: error

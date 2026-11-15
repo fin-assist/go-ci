@@ -51,13 +51,11 @@ def read_config(root: Path) -> dict:
 def git_output(root: Path, args: tuple[str, ...], text: bool):
     """Read bounded Git output without shell, hooks, prompts or replacement objects."""
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1")
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0",
+               GIT_NO_REPLACE_OBJECTS="1")
     credentials = []
-    if args[0] in {"fetch", "ls-remote"}:
-        if shutil.which("gh"):
-            credentials = ["-c", "credential.https://github.com.helper=!gh auth git-credential"]
-    else:
-        env["GIT_CONFIG_GLOBAL"] = os.devnull
+    if args[0] in {"fetch", "ls-remote"} and shutil.which("gh"):
+        credentials = ["-c", "credential.https://github.com.helper=!gh auth git-credential"]
     try:
         result = subprocess.run(
             ["git", "-c", "core.worktree=" + str(root.resolve()), "-c", "core.hooksPath=" + os.devnull,

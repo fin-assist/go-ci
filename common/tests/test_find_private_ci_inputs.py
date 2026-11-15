@@ -43,9 +43,11 @@ class PrivateInputsDiscoveryTest(unittest.TestCase):
     def test_branch_inputs_ignore_artifacts_from_other_revisions_and_legacy_events(self):
         revision = "3" * 40
         current = inputs.artifact_name(HEAD, BASE, revision)
-        self.assertEqual(current, f"{NAME}-{revision}")
+        self.assertEqual(current, f"private-ci-source-{HEAD}-{revision}")
+        self.assertEqual(inputs.artifact_name(HEAD, "f" * 40, revision), current)
+        self.assertEqual(inputs.artifact_name(HEAD, revision=revision), current)
         get = Mock(side_effect=[
-            {"total_count": 3, "artifacts": [artifact(3, name=f"{NAME}-{BASE}"),
+            {"total_count": 3, "artifacts": [artifact(3, name=f"private-ci-source-{HEAD}-{BASE}"),
                                               artifact(2, name=current), artifact(1, name=current)]},
             run(2), run(1, event="workflow_run"),
         ])

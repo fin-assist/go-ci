@@ -46,7 +46,6 @@ jobs:
         with:
           token: ${{ github.token }}
           head-sha: ${{ github.event.pull_request.head.sha }}
-          base-sha: ${{ github.event.pull_request.base.sha }}
           revision: ${{ job.workflow_sha }}
           timeout-seconds: '600'
       - name: Restore private inputs without cross-repository credentials

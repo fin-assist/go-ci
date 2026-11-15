@@ -8,8 +8,8 @@ inputs:
     description: Full pull request head SHA.
     required: true
   base-sha:
-    description: Full pull request base SHA.
-    required: true
+    description: Full pull request base SHA for legacy pinned consumers.
+    required: false
   revision:
     description: SHA of the branch-backed CI attempt. Omitted by pinned consumers.
     default: ''
@@ -41,7 +41,10 @@ runs:
         SHARED_REVISION: ${{ inputs.revision }}
         INPUTS_TIMEOUT: ${{ inputs.timeout-seconds }}
       run: |
-        options=()
-        if [ -n "$SHARED_REVISION" ]; then options+=(--revision "$SHARED_REVISION"); fi
+        if [ -n "$SHARED_REVISION" ]; then
+          identity=(--revision "$SHARED_REVISION")
+        else
+          identity=(--base-sha "$INPUTS_BASE_SHA")
+        fi
         timeout 610s python3 -I -B "$INPUTS_ACTION_PATH/../../../common/scripts/find_private_ci_inputs.py" \
-          --head-sha "$INPUTS_HEAD_SHA" --base-sha "$INPUTS_BASE_SHA" --bootstrap-sha "$BOOTSTRAP_SHA" --timeout-seconds "$INPUTS_TIMEOUT" "${options[@]}"
+          --head-sha "$INPUTS_HEAD_SHA" --bootstrap-sha "$BOOTSTRAP_SHA" --timeout-seconds "$INPUTS_TIMEOUT" "${identity[@]}"

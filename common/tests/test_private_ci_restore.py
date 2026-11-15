@@ -1,6 +1,8 @@
 """Exercise the credential-free restoration against actual Git bundles and files."""
 
 import json
+import re
+import sys
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +12,7 @@ import unittest
 import yaml
 
 from common import bootstrap
+from common.scripts.find_private_ci_inputs import artifact_name
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTION = ROOT / ".github/actions/restore-private-ci"
@@ -32,9 +35,10 @@ class PrivateInputRestoreTests(unittest.TestCase):
                  "HEAD_REPO": "fin-assist/assistant", "REVISION": SHA, "RUN_ID": "123",
                  "ARTIFACT": f"private-ci-{SHA}-{BASE}", "HEAD_SHA": SHA, "BASE_SHA": BASE, "BRANCH_MODE": "false"}
         self.assertEqual(execute(self.steps[0]["run"], **valid).returncode, 0)
-        updated = valid | {"BRANCH_MODE": "true", "ARTIFACT": f"private-ci-{SHA}-{BASE}-{SHA}"}
+        updated = valid | {"BRANCH_MODE": "true", "ARTIFACT": f"private-ci-source-{SHA}-{SHA}"}
         self.assertEqual(execute(self.steps[0]["run"], **updated).returncode, 0)
-        stale = updated | {"ARTIFACT": f"private-ci-{SHA}-{BASE}-{BASE}"}
+        self.assertEqual(execute(self.steps[0]["run"], **(updated | {"BASE_SHA": "c" * 40})).returncode, 0)
+        stale = updated | {"ARTIFACT": f"private-ci-source-{SHA}-{BASE}"}
         self.assertNotEqual(execute(self.steps[0]["run"], **stale).returncode, 0)
         for overrides in ({"HEAD_REPO": "fork/assistant"}, {"GITHUB_EVENT_NAME": "push"},
                           {"GITHUB_EVENT_NAME": "pull_request_target"}, {"REVISION": "a" * 12},
@@ -127,6 +131,12 @@ class PrivateInputRestoreTests(unittest.TestCase):
             good = execute(step["run"], **env, DETAILS=json.dumps(details), PULLS=json.dumps([pull]))
             self.assertEqual(good.returncode, 0, good.stderr)
             self.assertEqual(output.read_text(), f"number=42\nhead={SHA}\nrevision={BASE}\n")
+            output.unlink()
+            pinned = shared | {"path": shared["path"].replace("refs/heads/main", BASE)}
+            legacy = execute(step["run"], **env,
+                             DETAILS=json.dumps(details | {"referenced_workflows": [pinned]}), PULLS="[]")
+            self.assertEqual(legacy.returncode, 0, legacy.stderr)
+            self.assertFalse(output.exists())
             for update, pulls in (
                 ({"event": "push"}, [pull]),
                 ({"head_repository": {"full_name": "fork/assistant"}}, [pull]),
@@ -141,6 +151,78 @@ class PrivateInputRestoreTests(unittest.TestCase):
                                      PULLS=json.dumps(pulls))
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(output.exists())
+
+    def test_producer_discovery_and_restore_share_exact_artifact_names(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
+        upload = next(step for step in workflow["jobs"]["prepare"]["steps"]
+                      if step.get("uses", "").startswith("actions/upload-artifact@"))
+        formats = re.findall(r"format\('([^']+)', steps\.pull\.outputs\.head, steps\.(?:attempt\.outputs\.revision|pull\.outputs\.base)\)", upload["with"]["name"])
+        self.assertEqual(len(formats), 2)
+        for branch_mode, identity, template in ((True, SHA, formats[0]), (False, BASE, formats[1])):
+            expected = template.format(SHA, identity)
+            discovered = artifact_name(SHA, BASE, SHA if branch_mode else None)
+            self.assertEqual(expected, discovered)
+            env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": "fin-assist/assistant",
+                   "HEAD_REPO": "fin-assist/assistant", "REVISION": SHA, "RUN_ID": "123",
+                   "ARTIFACT": expected, "HEAD_SHA": SHA, "BASE_SHA": "c" * 40 if branch_mode else BASE,
+                   "BRANCH_MODE": str(branch_mode).lower()}
+            result = execute(self.steps[0]["run"], **env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_preparation_only_packages_the_correct_manifest_mode(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
+        action = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "manifests")
+        validator = action["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "private-ci-input"
+            source.mkdir()
+            output = root / "output"
+            for event, attempt, pin, accepted, revision in (
+                ("workflow_run", SHA, None, True, SHA),
+                ("workflow_run", SHA, BASE, False, None),
+                ("pull_request_target", "", BASE, True, BASE),
+                ("pull_request_target", "", None, True, None),
+                ("workflow_dispatch", "", None, False, None),
+                ("pull_request_target", "", "main", False, None),
+            ):
+                with self.subTest(event=event, attempt=attempt, pin=pin):
+                    output.unlink(missing_ok=True)
+                    config = {"profile": "library"} | ({"revision": pin} if pin else {})
+                    (source / ".finassist-ci.json").write_text(json.dumps(config))
+                    env = {**os.environ, "GITHUB_EVENT_NAME": event, "ATTEMPT_REVISION": attempt, "PROFILE": "library",
+                           "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(output)}
+                    result = subprocess.run([sys.executable, "-c", validator], env=env,
+                                            timeout=10, capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    if revision:
+                        self.assertEqual(output.read_text(), f"revision={revision}\n")
+                    else:
+                        self.assertFalse(output.exists())
+
+    def test_new_reusable_callers_bind_source_and_keep_pr_jobs_credential_free(self):
+        cases = [
+            ("shared-private-discovery.yml", "find"),
+            ("shared-qase90.yml", "qase90"),
+        ]
+        for name, job_name in cases:
+            workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
+            job = workflow["jobs"][job_name]
+            discover = next(step for step in job["steps"]
+                            if step.get("uses") == "$/.github/actions/private-ci-inputs")
+            self.assertEqual(discover["with"]["revision"], "${{ job.workflow_sha }}")
+            self.assertNotIn("base-sha", discover["with"])
+            self.assertEqual(workflow["permissions"]["actions"], "read")
+        self.assertIn("github.repository == 'fin-assist/bank-bff'", job["if"])
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", job["if"])
+        for step in job["steps"]:
+            for value in list(step.get("env", {}).values()) + list(step.get("with", {}).values()):
+                if "secrets.GO_MODULES_TOKEN" in str(value):
+                    self.assertEqual(step["if"], "github.event_name == 'push'")
+                    self.assertEqual(value, "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}")
+        restore = next(step for step in job["steps"] if step.get("uses") == "$/.github/actions/restore-private-ci")
+        self.assertEqual(restore["with"]["revision"], "${{ job.workflow_sha }}")
+        self.assertEqual(restore["with"]["branch-mode"], "true")
 
     def test_release_preparation_requires_semver_branch_and_protection(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())

@@ -27,12 +27,14 @@ class TemporaryApiError(RuntimeError):
     """The API request may succeed on retry."""
 
 
-def artifact_name(head_sha, base_sha, revision=None):
-    for sha in (head_sha, base_sha) if revision is None else (head_sha, base_sha, revision):
-        if not re.fullmatch(r"[0-9a-f]{40}", sha):
-            raise ValueError("expected full pull request head and base SHAs")
-    base = f"private-ci-{head_sha}-{base_sha}"
-    return base if revision is None else f"{base}-{revision}"
+def artifact_name(head_sha, base_sha=None, revision=None):
+    identity = base_sha if revision is None else revision
+    for sha in (head_sha, identity):
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("expected full pull request and shared source SHAs")
+    if revision is not None:
+        return f"private-ci-source-{head_sha}-{revision}"
+    return f"private-ci-{head_sha}-{base_sha}"
 
 
 def github_api(repository, token, deadline):
@@ -117,7 +119,7 @@ def wait_for_producer(get, repository, name, deadline, bootstrap_sha=None, *, ev
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--head-sha", required=True)
-    parser.add_argument("--base-sha", required=True)
+    parser.add_argument("--base-sha")
     parser.add_argument("--timeout-seconds", required=True, type=int, choices=range(1, 601), metavar="1-600")
     parser.add_argument("--bootstrap-sha", default="")
     parser.add_argument("--revision")

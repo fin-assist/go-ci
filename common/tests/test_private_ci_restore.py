@@ -142,7 +142,14 @@ class PrivateInputRestoreTests(unittest.TestCase):
                                                                "referenced_workflows": []}))
             self.assertEqual(legacy_qase.returncode, 0, legacy_qase.stderr)
             self.assertFalse(output.exists())
+            qase_ref = shared | {"path": shared["path"].replace("shared-go", "shared-qase90")}
+            qase_details = {"path": ".github/workflows/qase90.yml", "referenced_workflows": [qase_ref]}
+            branch_qase = execute(step["run"], **env, DETAILS=json.dumps(details | qase_details),
+                                  PULLS=json.dumps([pull]))
+            self.assertEqual(branch_qase.returncode, 0, branch_qase.stderr)
+            self.assertEqual(output.read_text(), f"number=42\nhead={SHA}\nrevision={BASE}\n")
             for update, pulls in (
+                (qase_details | {"referenced_workflows": [qase_ref, pinned]}, [pull]),
                 ({"referenced_workflows": []}, [pull]),
                 ({"event": "push"}, [pull]),
                 ({"head_repository": {"full_name": "fork/assistant"}}, [pull]),

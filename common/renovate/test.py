@@ -51,15 +51,19 @@ def contract(root, revision=None):
             if not isinstance(manifest_config, dict) or set(manifest_config) != {'revision'}:
                 raise ValueError('Specialized source manifest must contain only revision')
         pin = manifest_config.get('revision')
-        if not isinstance(pin, str) or not re.fullmatch(r'[0-9a-f]{40}', pin):
-            raise ValueError('Renovate source pin must be a full lowercase SHA')
-        if revision is None:
-            raise ValueError('Remote shared tests require an explicit source-revision')
-        if revision != pin:
-            raise ValueError('Renovate test action revision differs from consumer pin')
-        revision = pin
-        if (root / 'scripts/common_ci.py').read_bytes() != (SOURCE_ROOT / 'common/bootstrap.py').read_bytes():
-            raise ValueError('Consumer bootstrap differs from its pinned source transport')
+        if pin is None and manifest.name == '.finassist-ci.json':
+            if revision is not None:
+                raise ValueError('Branch-backed tests no longer accept a consumer source pin')
+            revision = 'refs/heads/main'
+        else:
+            if not isinstance(pin, str) or not re.fullmatch(r'[0-9a-f]{40}', pin):
+                raise ValueError('Renovate source pin must be a full lowercase SHA')
+            if revision is None:
+                raise ValueError('Remote shared tests require an explicit source-revision')
+            if revision != pin:
+                raise ValueError('Renovate test action revision differs from consumer pin')
+            if (root / 'scripts/common_ci.py').read_bytes() != (SOURCE_ROOT / 'common/bootstrap.py').read_bytes():
+                raise ValueError('Consumer bootstrap differs from its pinned source transport')
     elif revision:
         raise ValueError('Source self-tests use the local reviewed action, not a remote self pin')
     for filename, action in (('renovate-policy.yml', 'renovate-policy'),
@@ -71,7 +75,9 @@ def contract(root, revision=None):
         matching = [ref for ref in refs if ref.split('@', 1)[0].endswith('/actions/' + action)]
         if not matching or any(ref != expected for ref in matching):
             raise ValueError('Consumer action refs differ from the Renovate source pin')
-        if not host and filename == 'renovate-policy-tests.yml':
+        if revision == 'refs/heads/main' and filename == 'renovate-policy-tests.yml' and re.search(r'(?m)^\s*source-revision:', workflow):
+            raise ValueError('Branch-backed Renovate tests must not contain source pins')
+        if not host and revision != 'refs/heads/main' and filename == 'renovate-policy-tests.yml':
             passed = re.findall(r'(?m)^\s*source-revision:\s*[\"\']?([0-9a-f]{40})[\"\']?\s*$', workflow)
             declared = re.findall(r'(?m)^\s*source-revision:', workflow)
             if not passed or len(passed) != len(declared) or any(value != revision for value in passed):

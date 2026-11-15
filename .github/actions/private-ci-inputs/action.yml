@@ -10,6 +10,9 @@ inputs:
   base-sha:
     description: Full pull request base SHA.
     required: true
+  revision:
+    description: SHA of the branch-backed CI attempt. Omitted by pinned consumers.
+    default: ''
   bootstrap-sha:
     description: Reviewed one-time bootstrap commit, if the automatic producer is not yet on main.
     default: ''
@@ -35,7 +38,10 @@ runs:
         INPUTS_HEAD_SHA: ${{ inputs.head-sha }}
         INPUTS_BASE_SHA: ${{ inputs.base-sha }}
         BOOTSTRAP_SHA: ${{ inputs.bootstrap-sha }}
+        SHARED_REVISION: ${{ inputs.revision }}
         INPUTS_TIMEOUT: ${{ inputs.timeout-seconds }}
       run: |
+        options=()
+        if [ -n "$SHARED_REVISION" ]; then options+=(--revision "$SHARED_REVISION"); fi
         timeout 610s python3 -I -B "$INPUTS_ACTION_PATH/../../../common/scripts/find_private_ci_inputs.py" \
-          --head-sha "$INPUTS_HEAD_SHA" --base-sha "$INPUTS_BASE_SHA" --bootstrap-sha "$BOOTSTRAP_SHA" --timeout-seconds "$INPUTS_TIMEOUT"
+          --head-sha "$INPUTS_HEAD_SHA" --base-sha "$INPUTS_BASE_SHA" --bootstrap-sha "$BOOTSTRAP_SHA" --timeout-seconds "$INPUTS_TIMEOUT" "${options[@]}"

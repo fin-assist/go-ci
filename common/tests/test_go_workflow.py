@@ -56,7 +56,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
                 workflow = document(name)
                 trigger = workflow.get('on', workflow.get(True))
                 call = trigger['workflow_call']
-                self.assertTrue(call['inputs']['revision']['required'])
+                self.assertFalse(call['inputs']['revision']['required'])
                 self.assertEqual(call['inputs']['revision']['type'], 'string')
                 if name == 'shared-migrations.yml':
                     self.assertNotIn('secrets', call)
@@ -109,31 +109,31 @@ class SharedGoWorkflowTests(unittest.TestCase):
                 fix = next(step for step in job['steps'] if step.get('name') == 'Set the canonical go-ci cache origin')
                 self.assertEqual(fix['if'], "github.event_name == 'push'")
                 result = subprocess.run(['bash', '-e', '-c', fix['run']], cwd=root,
-                                        env={**os.environ, 'REVISION': revision},
+                                        env={**os.environ, 'SHARED_REVISION': revision, 'CI_REVISION': revision},
                                         capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
             good = subprocess.run(validate, cwd=ROOT, capture_output=True, text=True, timeout=5)
             self.assertEqual(good.returncode, 0, good.stderr)
 
     def test_revision_and_profile_validation_rejects_floating_or_hostile_inputs(self):
-        validation = named('shared-go.yml', 'Validate shared profile and revision')['run']
+        profile_check = named('shared-go.yml', 'Validate shared profile')['run']
         for profile in ['service', 'library']:
-            self.assertEqual(run(validation, SHARED_REVISION='a'*40,
-                                 SHARED_PROFILE=profile).returncode, 0)
-        for revision in ['', 'main', 'v1', 'a'*39, 'a'*41, 'G'*40, 'a'*39+';', '$(exit 0)']:
-            with self.subTest(revision=revision):
-                self.assertNotEqual(run(validation, SHARED_REVISION=revision,
-                                        SHARED_PROFILE='service').returncode, 0)
+            self.assertEqual(run(profile_check, SHARED_PROFILE=profile).returncode, 0)
         for profile in ['', 'contracts', 'service; true', '$(exit 0)']:
-            with self.subTest(profile=profile):
-                self.assertNotEqual(run(validation, SHARED_REVISION='a'*40,
-                                        SHARED_PROFILE=profile).returncode, 0)
-
-    def test_api_also_refuses_non_sha_revision(self):
-        validation = named('shared-api.yml', 'Validate shared revision')['run']
-        self.assertEqual(run(validation, SHARED_REVISION='0'*40).returncode, 0)
-        for revision in ['', 'main', 'a'*39, 'a'*41, '$(exit 0)']:
-            self.assertNotEqual(run(validation, SHARED_REVISION=revision).returncode, 0)
+            self.assertNotEqual(run(profile_check, SHARED_PROFILE=profile).returncode, 0)
+        for workflow in ('shared-go.yml', 'shared-lint.yml', 'shared-api.yml', 'shared-migrations.yml'):
+            step = named(workflow, 'Resolve the shared workflow revision')
+            self.assertEqual(step['env']['RESOLVED_SHA'], '${{ inputs.revision || job.workflow_sha }}')
+            self.assertEqual(named(workflow, 'Restore private CI inputs')['uses'], '$/.github/actions/restore-private-ci')
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / 'evidence'
+                env = {'GITHUB_ENV': str(target), 'GITHUB_STEP_SUMMARY': str(Path(directory) / 'summary')}
+                for revision in ('', 'main', 'a' * 39, '$(exit 0)'):
+                    self.assertNotEqual(run(step['run'], RESOLVED_SHA=revision, **env).returncode, 0)
+                self.assertFalse(target.exists())
+                revision = 'a' * 40
+                self.assertEqual(run(step['run'], RESOLVED_SHA=revision, **env).returncode, 0)
+                self.assertIn('FINASSIST_CI_REVISION=' + revision, target.read_text())
 
     def test_api_checker_receives_its_required_pinned_analyzer(self):
         analyzer = document('shared-api.yml')['env']['GORELEASE']
@@ -252,12 +252,12 @@ if report is not None:
                             capture_output=True, text=True, timeout=5)
                         self.assertEqual(result.returncode == 0, revision == 'a' * 40,
                                          result.stderr)
-                manifest.write_text('{}')
+                manifest.write_text('{"profile": "service"}')
                 result = subprocess.run(
                     ['bash', '-euo', 'pipefail', '-c', validation], cwd=directory,
                     env={**os.environ, 'SHARED_REVISION': 'a' * 40},
                     capture_output=True, text=True, timeout=5)
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_analyzers_can_select_their_toolchain_without_changing_test_compiler(self):
         script_tests = named('shared-go.yml', 'Test the scripts')
@@ -317,8 +317,8 @@ if report is not None:
         self.assertEqual(checkout['if'], "github.event_name == 'push'")
         self.assertEqual(checkout['uses'], 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1')
         self.assertEqual(checkout['with'], {
-            'repository': 'fin-assist/go-ci', 'ref': '${{ inputs.revision }}',
-            'path': '.finassist-ci/${{ inputs.revision }}', 'persist-credentials': False,
+            'repository': 'fin-assist/go-ci', 'ref': '${{ env.SHARED_REVISION }}',
+            'path': '.finassist-ci/${{ env.SHARED_REVISION }}', 'persist-credentials': False,
             'token': "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"})
         self.assertLess(steps('shared-go.yml').index(checkout),
                         steps('shared-go.yml').index(named('shared-go.yml', 'Access to private modules')))

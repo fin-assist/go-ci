@@ -12,6 +12,11 @@ import yaml
 
 
 SOURCE = 'fin-assist/go-ci/.github/workflows/'
+MAIN = 'refs/heads/main'
+PREPARE_EVENTS = {'pull_request_target': {
+    'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
+}}
+
 QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
     'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
 PRODUCTION_MODULES = QUALITY_MODULES - {'github.com/fin-assist/go-service-template'}
@@ -24,6 +29,13 @@ PUBLISH_CONDITION = ("github.event.workflow_run.conclusion == 'success' && "
 PUSH_TOKEN = "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}"
 
 SAME_REPO = 'github.event.pull_request.head.repo.full_name == github.repository'
+BRANCH_PREPARE_CONDITION = (
+    "github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && "
+    "github.event.workflow_run.head_repository.full_name == github.repository"
+)
+BRIDGE_PREPARE_CONDITION = (
+    "(github.event_name == 'pull_request_target' && " + SAME_REPO + ") || (" + BRANCH_PREPARE_CONDITION + ")"
+)
 DISCOVERY_CONDITION = ("github.event_name == 'pull_request' && "
                        "github.event.pull_request.head.repo.full_name == github.repository")
 DISCOVERY_ACTION = 'fin-assist/go-ci/.github/actions/private-ci-inputs@'
@@ -83,7 +95,11 @@ def suite(root, common):
 
         def context(self):
             manifest = json.loads((root / '.finassist-ci.json').read_text())
-            self.assertRegex(manifest['revision'], r'^[0-9a-f]{40}$')
+            pin = manifest.get('revision')
+            if pin is not None:
+                self.assertRegex(pin, r'^[0-9a-f]{40}$')
+            ref = pin or MAIN
+            revision_input = {'revision': pin} if pin else {}
             self.assertIn(manifest['profile'], ('service', 'library'))
             modules = re.findall(r'(?m)^module\s+(\S+)\s*$', (root / 'go.mod').read_text())
             self.assertEqual(len(modules), 1)
@@ -106,33 +122,46 @@ def suite(root, common):
                 self.assertEqual(production['permissions'], {'actions': 'read', 'contents': 'read'})
                 self.assertEqual(production['jobs'], {'publish': {
                     'if': PUBLISH_CONDITION,
-                    'uses': SOURCE + 'shared-production-image.yml@' + manifest['revision'],
+                    'uses': SOURCE + 'shared-production-image.yml@' + ref,
                     'permissions': {'actions': 'read', 'contents': 'read', 'packages': 'write'},
-                    'with': {'revision': manifest['revision']},
+                    **({'with': revision_input} if pin else {}),
                 }})
             else:
                 self.assertIs(enabled, False)
             discover = workflow['jobs']['private-inputs']
             self.assertEqual(discover['if'].strip(), DISCOVERY_CONDITION)
-            self.assertEqual(discover['outputs'], DISCOVERY_OUTPUTS)
-            self.assertNotIn('permissions', discover)
-            self.assertEqual(len(discover['steps']), 1)
-            step, = discover['steps']
-            self.assertEqual(step['id'], 'inputs')
-            self.assertEqual(step['uses'], DISCOVERY_ACTION + manifest['revision'])
-            self.assertNotIn('if', step)
-            discovery_inputs = dict(step['with'])
-            bootstrap = discovery_inputs.pop('bootstrap-sha', None)
-            if bootstrap is not None:
-                self.assertRegex(bootstrap, r'^[0-9a-f]{40}$')
-            self.assertEqual(discovery_inputs, DISCOVERY_INPUTS)
+            if pin:
+                self.assertEqual(discover['outputs'], DISCOVERY_OUTPUTS)
+                self.assertNotIn('permissions', discover)
+                step, = discover['steps']
+                self.assertEqual(step['id'], 'inputs')
+                self.assertEqual(step['uses'], DISCOVERY_ACTION + ref)
+                self.assertNotIn('if', step)
+                discovery_inputs = dict(step['with'])
+                bootstrap = discovery_inputs.pop('bootstrap-sha', None)
+                if bootstrap is not None:
+                    self.assertRegex(bootstrap, r'^[0-9a-f]{40}$')
+                self.assertEqual(discovery_inputs, DISCOVERY_INPUTS)
+            else:
+                self.assertEqual(discover, {
+                    'if': DISCOVERY_CONDITION,
+                    'uses': SOURCE + 'shared-private-discovery.yml@' + MAIN,
+                })
             prep = yaml.safe_load((root / '.github/workflows/private-ci-inputs.yml').read_text())
-            self.assertEqual(prep['permissions'], {'contents': 'read', 'pull-requests': 'read'})
             prepare = prep['jobs']['prepare']
+            prep_ref = prepare['uses'].rsplit('@', 1)[-1]
+            self.assertIn(prep_ref, {ref, MAIN})
+            branch_prep = prep_ref == MAIN
+            expected_permissions = {'contents': 'read', 'pull-requests': 'read'}
+            if branch_prep:
+                expected_permissions['actions'] = 'read'
+            self.assertEqual(prep['permissions'], expected_permissions)
             allowed = prepare['with']['allowed_module_repositories']
             self.assertIsInstance(allowed, str)
             self.assertTrue(all(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', repo) for repo in allowed.split()))
-            prepare_inputs = {'revision': manifest['revision'], 'allowed_module_repositories': allowed}
+            prepare_inputs = {'allowed_module_repositories': allowed}
+            if not branch_prep:
+                prepare_inputs.update(revision_input)
             if manifest['profile'] == 'library':
                 prepare_inputs['profile'] = 'library'
             qase90_inputs = ('qase90_bsd_revision', 'qase90_analytics_revision')
@@ -143,24 +172,34 @@ def suite(root, common):
                     self.assertRegex(revision, r'^[0-9a-f]{40}$')
                     prepare_inputs[name] = revision
             self.assertEqual(prep['jobs'], {'prepare': {
-                'if': SAME_REPO,
-                'uses': SOURCE + 'shared-private-inputs.yml@' + manifest['revision'],
+                'if': (SAME_REPO if not branch_prep else
+                           BRIDGE_PREPARE_CONDITION if pin else BRANCH_PREPARE_CONDITION),
+                'uses': SOURCE + 'shared-private-inputs.yml@' + prep_ref,
                 'with': prepare_inputs,
                 'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
             }})
             events = prep.get('on', prep.get(True))
-            self.assertEqual(events, {'pull_request_target': {
-                'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
-            }})
+            expected_events = dict(PREPARE_EVENTS) if pin else {}
+            if branch_prep:
+                expected_events['workflow_run'] = {
+                    'workflows': ['CI', 'Qase 90 cross-service'] if modules[0] == 'github.com/fin-assist/bank-bff' else ['CI'],
+                    'types': ['in_progress'],
+                }
+            self.assertEqual(events, expected_events)
             return manifest, workflow['jobs'], kinds
 
         def test_all_calls_use_the_manifest_source_and_profile(self):
             manifest, jobs, kinds = self.context()
+            pin = manifest.get('revision')
+            ref = pin or MAIN
             for kind in kinds:
                 with self.subTest(call=kind):
                     call = jobs[kind + '-check']
-                    self.assertEqual(call['uses'], SOURCE + 'shared-' + kind + '.yml@' + manifest['revision'])
-                    self.assertEqual(call['with']['revision'], manifest['revision'])
+                    self.assertEqual(call['uses'], SOURCE + 'shared-' + kind + '.yml@' + ref)
+                    if pin:
+                        self.assertEqual(call['with']['revision'], pin)
+                    else:
+                        self.assertNotIn('revision', call['with'])
                     self.assertNotIn('permissions', call)
                     self.assertEqual(call['needs'], 'private-inputs')
                     self.assertEqual(call['if'], MIGRATIONS_CONDITION if kind == 'migrations' else CHECK_CONDITION)
@@ -205,11 +244,11 @@ def suite(root, common):
                             publisher = release['jobs']['release']
                             self.assertNotIn('permissions', publisher)
                             self.assertNotIn('secrets', publisher)
-                            self.assertEqual(publisher['uses'], SOURCE + 'shared-release.yml@' + manifest['revision'])
+                            self.assertEqual(publisher['uses'], SOURCE + 'shared-release.yml@' + ref)
                             self.assertEqual({key: value for key, value in publisher['with'].items()
                                               if key != 'checkout_version'},
-                                             {'revision': manifest['revision'],
-                                              'tag': '${{ inputs.tag || github.ref_name }}'})
+                                             ({'revision': pin} if pin else {}) |
+                                             {'tag': '${{ inputs.tag || github.ref_name }}'})
                             self.assertEqual(publisher['with'].get('checkout_version', 'v4'),
                                              'v7' if module == 'github.com/fin-assist/bank-bff' else 'v4')
                             self.service_delegates()
@@ -239,7 +278,8 @@ def suite(root, common):
                             env={**os.environ, 'RESULT': outcome}, capture_output=True, text=True, timeout=5)
                         self.assertEqual(result.returncode == 0, outcome == 'success', outcome)
 
-        def test_copied_bootstrap_matches_the_pinned_source(self):
-            self.assertEqual((root / 'scripts/common_ci.py').read_bytes(), (common / 'bootstrap.py').read_bytes())
+        def test_legacy_pinned_bootstrap_matches_its_source(self):
+            if 'revision' in json.loads((root / '.finassist-ci.json').read_text()):
+                self.assertEqual((root / 'scripts/common_ci.py').read_bytes(), (common / 'bootstrap.py').read_bytes())
 
     return unittest.defaultTestLoader.loadTestsFromTestCase(ConsumerContract)

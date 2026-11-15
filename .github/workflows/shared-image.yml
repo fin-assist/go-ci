@@ -14,7 +14,7 @@ on:
         type: string
       revision:
         description: Full commit SHA of the shared CI source
-        required: true
+        required: false
         type: string
       fake_llm:
         required: false
@@ -38,17 +38,20 @@ jobs:
     timeout-minutes: 25
     env:
       SERVICE: ${{ inputs.service }}
-      CI_REVISION: ${{ inputs.revision }}
       FAKE_LLM: ${{ inputs.fake_llm }}
       DOCKER_BUILDKIT: '1'
     steps:
+      - name: Resolve the shared workflow revision
+        env:
+          RESOLVED_SHA: ${{ inputs.revision || job.workflow_sha }}
+        run: |
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'CI_REVISION=%s\nFINASSIST_CI_REVISION=%s\n' "$RESOLVED_SHA" "$RESOLVED_SHA" >> "$GITHUB_ENV"
+          printf 'Go CI source: `%s`\n' "$RESOLVED_SHA" >> "$GITHUB_STEP_SUMMARY"
       - name: Validate immutable source and image profile
         run: |
           python3 - <<'PY'
           import os
-          import re
-          if not re.fullmatch(r'[0-9a-f]{40}', os.environ['CI_REVISION']):
-              raise SystemExit('Shared CI revision must be a full commit SHA')
           services = {'service', 'user', 'analytics', 'assistant', 'bank-statement-data', 'bank-bff'}
           if os.environ['SERVICE'] not in services:
               raise SystemExit('Unsupported service image profile')
@@ -65,14 +68,15 @@ jobs:
           import os
           with open('.finassist-ci.json', encoding='utf-8') as stream:
               manifest = json.load(stream)
-          if manifest['revision'] != os.environ['CI_REVISION']:
+          if manifest.get('revision', os.environ['CI_REVISION']) != os.environ['CI_REVISION']:
               raise SystemExit('Local and CI pins differ')
           PY
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
-        uses: fin-assist/go-ci/.github/actions/restore-private-ci@540e614a1272237b05a0258cfa6be333a97fb0d5
+        uses: $/.github/actions/restore-private-ci
         with:
-          revision: ${{ inputs.revision }}
+          branch-mode: ${{ inputs.revision == '' && 'true' || 'false' }}
+          revision: ${{ env.CI_REVISION }}
           run-id: ${{ inputs.private_input_run_id }}
           artifact-name: ${{ inputs.private_input_artifact }}
       - name: Checkout private CI source on trusted pushes
@@ -80,15 +84,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
-          ref: ${{ inputs.revision }}
+          ref: ${{ env.CI_REVISION }}
           token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
-          path: .finassist-ci/${{ inputs.revision }}
+          path: .finassist-ci/${{ env.CI_REVISION }}
           persist-credentials: false
       - name: Set the canonical go-ci cache origin
         if: github.event_name == 'push'
-        env:
-          REVISION: ${{ inputs.revision }}
-        run: git -C ".finassist-ci/$REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
+        run: git -C ".finassist-ci/$CI_REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
       - name: Build and smoke-test the images
         id: image
         env:

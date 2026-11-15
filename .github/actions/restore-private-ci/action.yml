@@ -4,6 +4,9 @@ inputs:
   revision:
     required: true
     description: Full shared source commit SHA
+  branch-mode:
+    description: Require an artifact produced for this exact branch-backed revision.
+    default: 'false'
   run-id:
     required: true
     description: Trusted preparation workflow run
@@ -18,6 +21,7 @@ runs:
       env:
         HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         REVISION: ${{ inputs.revision }}
+        BRANCH_MODE: ${{ inputs.branch-mode }}
         RUN_ID: ${{ inputs.run-id }}
         ARTIFACT: ${{ inputs.artifact-name }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -27,7 +31,9 @@ runs:
         test "$HEAD_REPO" = "$GITHUB_REPOSITORY"
         [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || exit 1
         [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-        test "$ARTIFACT" = "private-ci-$HEAD_SHA-$BASE_SHA"
+        expected="private-ci-$HEAD_SHA-$BASE_SHA"
+        if [ "$BRANCH_MODE" = true ]; then expected="$expected-$REVISION"; fi
+        test "$ARTIFACT" = "$expected"
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
       with:
         name: ${{ inputs.artifact-name }}

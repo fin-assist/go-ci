@@ -36,7 +36,8 @@ def read_config(root: Path) -> dict:
     config = json.loads(path.read_text(), object_pairs_hook=unique_object)
     if not isinstance(config, dict) or set(config) - {"revision", "profile", "gosec_g115", "squawk_smallint"}:
         raise ValueError("Unknown shared CI configuration fields.")
-    if not isinstance(config.get("revision"), str) or not re.fullmatch(r"[0-9a-f]{40}", config["revision"]):
+    if "revision" in config and (not isinstance(config["revision"], str)
+                                 or not re.fullmatch(r"[0-9a-f]{40}", config["revision"])):
         raise ValueError("Shared CI revision must be a full lowercase commit SHA.")
     if config.get("profile") not in ("service", "library"):
         raise ValueError("Shared CI profile must be service or library.")
@@ -50,12 +51,14 @@ def read_config(root: Path) -> dict:
 def git_output(root: Path, args: tuple[str, ...], text: bool):
     """Read bounded Git output without shell, hooks, prompts or replacement objects."""
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0",
-               GIT_NO_REPLACE_OBJECTS="1")
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1")
+    if args[0] not in {"fetch", "ls-remote"}:
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
     try:
         result = subprocess.run(
             ["git", "-c", "core.worktree=" + str(root.resolve()), "-c", "core.hooksPath=" + os.devnull,
-             "-c", "core.fsmonitor=false", "-c", "protocol.file.allow=never", *args],
+             "-c", "core.fsmonitor=false", "-c", "protocol.allow=never",
+             "-c", "protocol.https.allow=always", *args],
             cwd=root, env=env, check=True, capture_output=True, text=text, timeout=120)
     except (subprocess.SubprocessError, OSError) as error:
         # Git stderr can contain local credential helpers or authenticated URL rewrites.
@@ -152,6 +155,22 @@ def validate_cache(cache: Path, revision: str) -> Path:
     return common
 
 
+def resolve_revision(root: Path, config: dict) -> str:
+    """Resolve the runner's exact source SHA, an explicit local SHA, or protected main."""
+    pin = config.get("revision")
+    revision = os.environ.get("FINASSIST_CI_REVISION") or pin
+    if revision is None:
+        result = git(root, "ls-remote", "--exit-code", SOURCE_URL, "refs/heads/main")
+        revision, ref = result.split("\t")
+        if ref != "refs/heads/main":
+            raise ValueError("Unexpected shared CI branch.")
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("Shared CI revision must be a full lowercase commit SHA.")
+    if pin is not None and revision != pin:
+        raise ValueError("Local and CI source pins differ.")
+    return revision
+
+
 def source_dir(root: Path, config: dict, source: Path | None = None) -> Path:
     """Resolve an explicit local source or an independently verified pinned checkout."""
     if source is not None:
@@ -165,7 +184,7 @@ def source_dir(root: Path, config: dict, source: Path | None = None) -> Path:
     if cache_root.is_symlink():
         raise ValueError("Shared CI cache root must not be a symbolic link.")
     cache_root.mkdir(exist_ok=True)
-    revision = config["revision"]
+    revision = resolve_revision(root, config)
     cache = cache_root / revision
     if cache.exists() or cache.is_symlink():
         return validate_cache(cache, revision)

@@ -11,7 +11,7 @@ on:
         type: string
       revision:
         type: string
-        required: true
+        required: false
 
 permissions:
   actions: read
@@ -23,17 +23,24 @@ jobs:
     timeout-minutes: 10
     env:
       BASE_REF: ${{ github.base_ref }}
-      SHARED_REVISION: ${{ inputs.revision }}
     steps:
+      - name: Resolve the shared workflow revision
+        env:
+          RESOLVED_SHA: ${{ inputs.revision || job.workflow_sha }}
+        run: |
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'SHARED_REVISION=%s\nFINASSIST_CI_REVISION=%s\n' "$RESOLVED_SHA" "$RESOLVED_SHA" >> "$GITHUB_ENV"
+          printf 'Go CI source: `%s`\n' "$RESOLVED_SHA" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
-        uses: fin-assist/go-ci/.github/actions/restore-private-ci@540e614a1272237b05a0258cfa6be333a97fb0d5
+        uses: $/.github/actions/restore-private-ci
         with:
-          revision: ${{ inputs.revision }}
+          branch-mode: ${{ inputs.revision == '' && 'true' || 'false' }}
+          revision: ${{ env.SHARED_REVISION }}
           run-id: ${{ inputs.private_input_run_id }}
           artifact-name: ${{ inputs.private_input_artifact }}
       - uses: actions/setup-node@v7
@@ -45,7 +52,7 @@ jobs:
           import json, os, re
           pin = os.environ['SHARED_REVISION']
           assert re.fullmatch('[0-9a-f]{40}', pin), 'A full SHA is required'
-          assert json.load(open('.finassist-ci.json'))['revision'] == pin, 'Local and CI pins differ'
+          assert json.load(open('.finassist-ci.json')).get('revision', pin) == pin, 'Local and CI pins differ'
           PY
       - name: Same immutable SQL and Squawk checks as local development
         run: make lint-migrations BASE_REF="origin/$BASE_REF"

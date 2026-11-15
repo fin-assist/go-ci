@@ -21,14 +21,15 @@ on:
         description: Pinned analytics source for bank-bff Qase 90
         type: string
       revision:
-        description: Full commit SHA of the trusted prepare implementation
-        required: true
+        description: Legacy full commit SHA of the trusted prepare implementation
+        required: false
         type: string
     secrets:
       GO_MODULES_TOKEN:
         required: true
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -40,29 +41,60 @@ jobs:
         (github.event.pull_request.base.ref == 'main' ||
          startsWith(github.event.pull_request.base.ref, 'release/')) &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'workflow_run' && inputs.revision == '' &&
+        github.event.action == 'in_progress' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
        (github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/fin491-ci-bootstrap'))
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: Require a protected release target
-        if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref != 'main'
+      - name: Identify this CI attempt and its shared revision
+        id: attempt
+        if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_REF: ${{ github.event.pull_request.base.ref }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
-          [[ "$TARGET_REF" =~ ^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
-          branch=$(jq -rn --arg ref "$TARGET_REF" '$ref | @uri')
-          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected)" = true
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$SOURCE_RUN" =~ ^[1-9][0-9]*$ && "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
+          endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT"
+          details=$(timeout 35s gh api "$endpoint")
+          identity=$(jq -er --arg repo "$GITHUB_REPOSITORY" '
+            select(.event == "pull_request" and .repository.full_name == $repo and
+                   .head_repository.full_name == $repo and
+                   (.path == ".github/workflows/ci.yml" or .path == ".github/workflows/qase90.yml")) |
+            . as $run |
+            [.referenced_workflows[]? | select(.path |
+              test("^fin-assist/go-ci/\\.github/workflows/shared-(go|lint|api|migrations|image|private-discovery|qase90)\\.yml@refs/heads/main$")) |
+              .sha] as $refs |
+            select(($refs | unique | length) == 1) |
+            [$run.head_sha, $run.head_branch, $refs[0]] | @tsv
+          ' <<< "$details")
+          IFS=$'\t' read -r head branch revision <<< "$identity"
+          [[ "$head" =~ ^[0-9a-f]{40}$ && "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          number=$(timeout 35s gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f state=open -f "head=fin-assist:$branch" -F per_page=100 |
+            jq -er --arg repo "$GITHUB_REPOSITORY" --arg sha "$head" '
+              [.[] | select(.head.repo.full_name == $repo and .base.repo.full_name == $repo and
+                .head.sha == $sha) | .number] | select(length == 1) | .[0]
+            ')
+          [[ "$number" =~ ^[1-9][0-9]*$ ]] || exit 1
+          printf 'number=%s\nhead=%s\nrevision=%s\n' "$number" "$head" "$revision" >> "$GITHUB_OUTPUT"
       - name: Resolve the open pull request
         id: pull
         env:
           GH_TOKEN: ${{ github.token }}
-          NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+          NUMBER: ${{ github.event.pull_request.number || steps.attempt.outputs.number || inputs.pull_request_number }}
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          ATTEMPT_HEAD: ${{ steps.attempt.outputs.head }}
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
           EVENT_REF: ${{ github.event.pull_request.base.ref }}
-          TRUSTED_REVISION: ${{ inputs.revision }}
+          TRUSTED_REVISION: ${{ inputs.revision || job.workflow_sha }}
         run: |
           [[ "$NUMBER" =~ ^[1-9][0-9]*$ && "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1
           read -r head base target < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" --jq '
@@ -73,16 +105,28 @@ jobs:
             test "$head" = "$EVENT_HEAD"
             test "$base" = "$EVENT_BASE"
             test "$target" = "$EVENT_REF"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            test "$head" = "$ATTEMPT_HEAD"
           else
             test "$target" = main
           fi
-          printf 'head=%s\nbase=%s\n' "$head" "$base" >> "$GITHUB_OUTPUT"
+          printf 'head=%s\nbase=%s\ntarget=%s\n' "$head" "$base" "$target" >> "$GITHUB_OUTPUT"
+      - name: Require a protected release target
+        if: steps.pull.outputs.target != 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ steps.pull.outputs.target }}
+        run: |
+          [[ "$TARGET_REF" =~ ^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          branch=$(jq -rn --arg ref "$TARGET_REF" '$ref | @uri')
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected)" = true
       - name: Read Go manifests as data from the exact PR head
         id: manifests
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pull.outputs.head }}
           PROFILE: ${{ inputs.profile }}
+          ATTEMPT_REVISION: ${{ steps.attempt.outputs.revision }}
         run: |
           mkdir -p "$RUNNER_TEMP/private-ci-input" "$RUNNER_TEMP/private-ci-output"
           for file in go.mod .finassist-ci.json; do
@@ -110,7 +154,10 @@ jobs:
           profile = os.environ["PROFILE"]
           if profile not in {"service", "library"} or manifest["profile"] != profile:
               raise SystemExit("The consumer CI profile and pull request manifest differ.")
-          revision = manifest["revision"]
+          attempt = os.environ["ATTEMPT_REVISION"]
+          revision = attempt or manifest.get("revision", "")
+          if attempt and "revision" in manifest:
+              raise SystemExit("This CI attempt requires an unpinned consumer manifest.")
           if not re.fullmatch("[0-9a-f]{40}", revision):
               raise SystemExit("A full go-ci SHA is required.")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -120,17 +167,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           SOURCE_SHA: ${{ steps.manifests.outputs.revision }}
-          TRUSTED_REVISION: ${{ inputs.revision }}
+          TRUSTED_REVISION: ${{ inputs.revision || job.workflow_sha }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$SOURCE_SHA" = "$TRUSTED_REVISION" ]; then
             exit 0
           fi
-          test "$(gh api "repos/fin-assist/go-ci/compare/$SOURCE_SHA...main" --jq .merge_base_commit.sha)" = "$SOURCE_SHA"
+          main_sha=$(gh api repos/fin-assist/go-ci/git/ref/heads/main --jq .object.sha)
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test "$(gh api "repos/fin-assist/go-ci/compare/$SOURCE_SHA...$main_sha" --jq .merge_base_commit.sha)" = "$SOURCE_SHA"
       - name: Checkout trusted preparation scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
-          ref: ${{ inputs.revision }}
+          ref: ${{ inputs.revision || job.workflow_sha }}
           token: ${{ secrets.GO_MODULES_TOKEN }}
           path: .finassist-ci/trusted-preparation
           persist-credentials: false
@@ -212,7 +261,7 @@ jobs:
             --allowed-repositories "$ALLOWED_REPOSITORIES" "${options[@]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: private-ci-${{ steps.pull.outputs.head }}-${{ steps.pull.outputs.base }}
+          name: private-ci-${{ steps.pull.outputs.head }}-${{ steps.pull.outputs.base }}${{ steps.attempt.outputs.revision != '' && format('-{0}', steps.attempt.outputs.revision) || '' }}
           path: ${{ runner.temp }}/private-ci-output/
           retention-days: 5
           if-no-files-found: error

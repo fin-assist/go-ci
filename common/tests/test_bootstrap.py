@@ -52,6 +52,22 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bootstrap.read_config(self.root)
 
+    def test_unpinned_manifest_uses_current_branch_or_exact_override(self):
+        self.write({"profile": "library"})
+        config = bootstrap.read_config(self.root)
+        self.assertNotIn("revision", config)
+        branch = "b" * 40
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(bootstrap, "git") as git:
+            git.return_value = f"{branch}\trefs/heads/main"
+            self.assertEqual(bootstrap.resolve_revision(self.root, config), branch)
+            git.assert_called_once_with(self.root, "ls-remote", "--exit-code", bootstrap.SOURCE_URL, "refs/heads/main")
+        override = "c" * 40
+        with mock.patch.dict(os.environ, {"FINASSIST_CI_REVISION": override}), mock.patch.object(bootstrap, "git") as git:
+            self.assertEqual(bootstrap.resolve_revision(self.root, config), override)
+            git.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "pins differ"):
+                bootstrap.resolve_revision(self.root, self.config)
+
     def test_missing_manifest_fails(self):
         with self.assertRaises(OSError):
             bootstrap.read_config(self.root)

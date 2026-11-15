@@ -15,14 +15,18 @@ go-grpc, go-migrate, go-worker. Специализированные прове�
 `ciWorkflow` выбирает `ci.yml` либо infra `stage.yml`; required check names и `ciChecks`
 сохраняют смысл. Shared-source CI самого go-ci остаётся `shared-source` вместе с двумя policy checks.
 
-Одна версия controller/test actions закрепляется полным 40-символьным SHA `fin-assist/go-ci`.
-15 Go-потребителей используют существующий `.finassist-ci.json.revision`; android/contracts/infra —
+После перехода FIN-516 Go-потребители вызывают controller/test actions из защищённой ветки
+`fin-assist/go-ci` по `@refs/heads/main`. В их `.finassist-ci.json` остаются профиль и исключения.
+В активном `renovate.json` обновления refs к `go-ci` отключены для manager `github-actions`.
+Обновления кода самого контроллера по-прежнему проходят PR, ревью и CI в `go-ci`.
+
+При прежнем контракте controller/test actions закрепляются полным 40-символьным SHA `fin-assist/go-ci`. Android, contracts и infra продолжают использовать
 нейтральный `.github/renovate-source.json` с единственным полем `revision`. Go-профиль для них не вводится.
 `source-revision` обоих test steps должен совпадать с manifest и всеми controller/test action refs.
 Renovate обновляет эти значения одной группой; самостоятельный bump одного поля отклоняется contract test.
 Версии Renovate runtime и зависимости не повышаются переносом.
 
-Новые managers для `source-revision`, сервисного release `revision` и специального manifest
+Для потребителей с закреплением SHA managers для `source-revision`, сервисного release `revision` и специального manifest
 находятся непосредственно в активном `renovate.json`. У android/contracts/infra там же находится
 новая общая группа. Они доступны hosted Renovate при выключенном write-контроллере: локальный
 `renovate-base.json` сам по себе не заменяет preset `base.json` защищённой ветки. Прежние FIN-372
@@ -43,7 +47,7 @@ FIN-504 ограничивает `workflow_run` проверками собст�
 
 Job reconcile допускается только в main и получает прежний Environment `renovate-policy`.
 Он читает main checkout как данные, затем вызывает
-`fin-assist/go-ci/.github/actions/renovate-policy@<полный SHA>` с inputs `enabled`,
+`fin-assist/go-ci/.github/actions/renovate-policy` по ref потребителя с inputs `enabled`,
 `repository-root`, `token`, `read-token`. Actions разрешения не расширяются; token передаётся
 только этой action, обычным PR/test jobs он недоступен. Composite action не устанавливает
 Environment: он принадлежит вызывающему job.
@@ -84,6 +88,8 @@ test shim получает `<common>` существующим raw-object-verifi
 используется та же побайтная копия bootstrap и только `source_dir(root, revision)`, без Go-profile
 rendering. `common/bootstrap.py` не меняется. Runtime JS получает caller manifest/config явно и
 проверяет точную установленную версию; consumer scripts не импортируются.
+
+Для Go-потребителя по FIN-516 локальные команды запускаются без `--source-revision`, поскольку транспорт уже выбрал источник.
 
 Все процессы имеют timeout: Python suite90s, каждый actual Renovate fixture90s, test action300s,
 production controller540s; job/внешние локальные лимиты также сохраняются. Npm install scripts

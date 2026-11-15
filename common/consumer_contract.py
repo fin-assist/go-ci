@@ -12,7 +12,7 @@ import yaml
 
 
 SOURCE = 'fin-assist/go-ci/.github/workflows/'
-MAIN = 'refs/heads/main'
+MAIN = 'main'
 PREPARE_EVENTS = {'pull_request_target': {
     'branches': ['main', 'release/**'], 'types': ['opened', 'reopened', 'synchronize'],
 }}
@@ -150,8 +150,9 @@ def suite(root, common):
             prep = yaml.safe_load((root / '.github/workflows/private-ci-inputs.yml').read_text())
             prepare = prep['jobs']['prepare']
             prep_ref = prepare['uses'].rsplit('@', 1)[-1]
-            self.assertIn(prep_ref, {ref, MAIN})
-            branch_prep = prep_ref == MAIN
+            # Accept the transitional producer spelling until all consumers migrate.
+            self.assertIn(prep_ref, {ref, MAIN, 'refs/heads/main'} if pin else {MAIN})
+            branch_prep = prep_ref != pin
             expected_permissions = {'contents': 'read', 'pull-requests': 'read'}
             if branch_prep:
                 expected_permissions['actions'] = 'read'

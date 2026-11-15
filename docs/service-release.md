@@ -7,7 +7,7 @@
 
 Тонкий caller сохраняет свои `push.tags: ['v*']`, `workflow_dispatch` с input `tag`,
 manual-only-main condition и прежнее имя release job. Caller сохраняет только
-`permissions: {contents: write}` и не передаёт `secrets` общему workflow. После FIN-516 его `uses` выбирает `@refs/heads/main`. Точный SHA workflow записывается в отчёт. `with.tag` передаёт
+`permissions: {contents: write}` и не передаёт `secrets` общему workflow. После FIN-516 его `uses` выбирает `@main`. Точный SHA workflow записывается в отчёт. `with.tag` передаёт
 `${{ inputs.tag || github.ref_name }}` как данные; source проверяет точный event/ref:
 только matching tag push либо manual `refs/heads/main`. PR, workflow_run, другой manual ref
 и несогласованный tag/ref не допускаются. Case-sensitive Python проверка применяется до

@@ -128,10 +128,14 @@ class PrivateInputRestoreTests(unittest.TestCase):
             env = {"PATH": directory + os.pathsep + os.environ["PATH"], "GITHUB_REPOSITORY": repository,
                    "GITHUB_REF": "refs/heads/main", "GITHUB_REF_PROTECTED": "true",
                    "SOURCE_RUN": "123", "SOURCE_ATTEMPT": "2", "GITHUB_OUTPUT": str(output)}
-            good = execute(step["run"], **env, DETAILS=json.dumps(details), PULLS=json.dumps([pull]))
-            self.assertEqual(good.returncode, 0, good.stderr)
-            self.assertEqual(output.read_text(), f"number=42\nhead={SHA}\nrevision={BASE}\n")
-            output.unlink()
+            for ref in ("main", "refs/heads/main"):
+                with self.subTest(metadata_ref=ref):
+                    candidate = shared | {"path": shared["path"].replace("refs/heads/main", ref)}
+                    attempt = details | {"referenced_workflows": [candidate]}
+                    good = execute(step["run"], **env, DETAILS=json.dumps(attempt), PULLS=json.dumps([pull]))
+                    self.assertEqual(good.returncode, 0, good.stderr)
+                    self.assertEqual(output.read_text(), f"number=42\nhead={SHA}\nrevision={BASE}\n")
+                    output.unlink()
             pinned = shared | {"path": shared["path"].replace("refs/heads/main", BASE)}
             legacy = execute(step["run"], **env,
                              DETAILS=json.dumps(details | {"referenced_workflows": [pinned]}), PULLS="[]")

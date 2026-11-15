@@ -2,6 +2,7 @@
 """Build and smoke-test the service images without publishing them."""
 
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,8 @@ import tempfile
 import uuid
 
 
+BUILDKIT_IMAGE = ("moby/buildkit:v0.35.0@"
+                  "sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb")
 SERVICES = frozenset({"service", "user", "analytics", "assistant", "bank-statement-data", "bank-bff"})
 
 
@@ -67,7 +70,28 @@ def content_id(image, run):
     return identity
 
 
-def build_images(service, fake_llm, revision, *, environ=os.environ, run=command, image_ids=None):
+@contextmanager
+def image_builder(run=command):
+    """Use the same explicit BuildKit exporter on every runner."""
+    name = "go-ci-image-" + uuid.uuid4().hex
+    run(["docker", "buildx", "create", "--name", name, "--driver", "docker-container",
+         "--driver-opt", "image=" + BUILDKIT_IMAGE], timeout=30)
+    try:
+        yield name
+    finally:
+        run(["docker", "buildx", "rm", name], timeout=30)
+
+
+def reproducible_build(epoch, builder):
+    """Normalize image config and layer timestamps on the local Docker exporter."""
+    if not re.fullmatch(r"[0-9]+", epoch):
+        raise ValueError("expected a Unix source timestamp")
+    return ["docker", "buildx", "build", "--builder", builder,
+            "--output", "type=docker,rewrite-timestamp=true",
+            "--provenance=false", "--build-arg", "SOURCE_DATE_EPOCH=" + epoch]
+
+
+def build_images(service, fake_llm, revision, *, builder, environ=os.environ, run=command, image_ids=None):
     """Return the tested primary image tag; stage packaging uses that exact image."""
     if service not in SERVICES:
         raise ValueError("unsupported service image profile")
@@ -77,14 +101,15 @@ def build_images(service, fake_llm, revision, *, environ=os.environ, run=command
         raise ValueError("expected full source SHA")
     # user historically builds service:ci; its extracted binary is still named user.
     image = ("service" if service == "user" else service) + ":ci"
+    cache = environ.get("FINASSIST_GO_MODULE_CACHE")
+    if cache and (not Path(cache).is_absolute() or not Path(cache).is_dir()):
+        raise ValueError("expected a local directory for the prepared Go module cache")
+    epoch = run(["git", "show", "-s", "--format=%ct", revision], timeout=10).strip()
+    arguments = reproducible_build(epoch, builder)
+    if cache:
+        arguments.extend(["--build-context", "go-module-cache=" + cache])
     secret_path = None
     try:
-        arguments = ["docker", "build"]
-        cache = environ.get("FINASSIST_GO_MODULE_CACHE")
-        if cache:
-            if not Path(cache).is_absolute() or not Path(cache).is_dir():
-                raise ValueError("expected a local directory for the prepared Go module cache")
-            arguments.extend(["--build-context", "go-module-cache=" + cache])
         token = environ.get("GO_MODULES_TOKEN", "")
         if token:
             with tempfile.NamedTemporaryFile(mode="w", prefix="finassist-netrc-", delete=False,
@@ -119,7 +144,9 @@ def main():
     parser.add_argument("--fake-llm", choices=["true", "false"], default="false")
     args = parser.parse_args()
     image_ids = {}
-    image = build_images(args.service, args.fake_llm == "true", os.environ["GITHUB_SHA"], image_ids=image_ids)
+    with image_builder() as builder:
+        image = build_images(args.service, args.fake_llm == "true", os.environ["GITHUB_SHA"],
+                             builder=builder, image_ids=image_ids)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("image_tag=" + image + "\n")
         for key, value in image_ids.items():

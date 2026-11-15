@@ -20,6 +20,10 @@ SPEC.loader.exec_module(IMAGE)
 SHA = "a" * 40
 IMAGE_ID = "sha256:" + "b" * 64
 FAKE_ID = "sha256:" + "c" * 64
+SOURCE_EPOCH = "1700000000"
+BUILDER = "test-builder"
+BUILD = ["docker", "buildx", "build", "--builder", BUILDER, "--output", "type=docker,rewrite-timestamp=true", "--provenance=false",
+         "--build-arg", "SOURCE_DATE_EPOCH=" + SOURCE_EPOCH]
 
 
 class Runner:
@@ -32,6 +36,8 @@ class Runner:
 
     def __call__(self, arguments, **options):
         self.calls.append((arguments, options))
+        if arguments[:2] == ["git", "show"]:
+            return SOURCE_EPOCH + "\n"
         if arguments[:3] == ["docker", "image", "inspect"]:
             return FAKE_ID if arguments[-1] == "fake-llm:ci" else IMAGE_ID
         if arguments[-1] == "help":
@@ -56,6 +62,17 @@ class Runner:
 
 
 class ImageSmokeTests(unittest.TestCase):
+    def test_explicit_builder_is_removed_after_failure(self):
+        run = Runner()
+        with self.assertRaisesRegex(RuntimeError, "build failed"):
+            with IMAGE.image_builder(run=run) as name:
+                raise RuntimeError("build failed")
+        self.assertEqual(run.calls, [
+            (["docker", "buildx", "create", "--name", name, "--driver", "docker-container",
+              "--driver-opt", "image=" + IMAGE.BUILDKIT_IMAGE], {"timeout": 30}),
+            (["docker", "buildx", "rm", name], {"timeout": 30}),
+        ])
+
     def test_cli_builds_the_caller_sha_and_publishes_the_tested_image_tag(self):
         for service, fake in [("analytics", "false"), ("assistant", "true"), ("user", "false")]:
             with self.subTest(service=service), tempfile.TemporaryDirectory() as directory:
@@ -64,35 +81,37 @@ class ImageSmokeTests(unittest.TestCase):
                 with mock.patch("sys.argv", ["image_smoke.py", "--service", service, "--fake-llm", fake]), \
                         mock.patch.dict(os.environ, {"GITHUB_SHA": SHA, "CI_REVISION": "b" * 40,
                                                      "GITHUB_OUTPUT": str(output)}), \
+                        mock.patch.object(IMAGE, "image_builder") as image_builder, \
                         mock.patch.object(IMAGE, "build_images", side_effect=lambda *a, **kw: (kw["image_ids"].update(image_id=IMAGE_ID) or image)) as build:
+                    image_builder.return_value.__enter__.return_value = BUILDER
                     IMAGE.main()
-                build.assert_called_once_with(service, fake == "true", SHA, image_ids={"image_id": IMAGE_ID})
+                build.assert_called_once_with(service, fake == "true", SHA, builder=BUILDER, image_ids={"image_id": IMAGE_ID})
                 self.assertEqual(output.read_text(), "image_tag=" + image + "\nimage_id=" + IMAGE_ID + "\n")
 
     def test_primary_profiles_build_tested_tags_with_source_revision(self):
         for service in sorted(IMAGE.SERVICES):
             with self.subTest(service=service):
                 run = Runner()
-                image = IMAGE.build_images(service, False, SHA, environ={}, run=run)
+                image = IMAGE.build_images(service, False, SHA, builder=BUILDER, environ={}, run=run)
                 self.assertEqual(image, ("service" if service == "user" else service) + ":ci")
-                build = run.calls[0]
-                self.assertEqual(build[0], ["docker", "build", "--build-arg", "VERSION=" + SHA,
-                                             "-t", image, "."])
+                self.assertEqual(run.calls[0], (["git", "show", "-s", "--format=%ct", SHA], {"timeout": 10}))
+                build = run.calls[1]
+                self.assertEqual(build[0], BUILD + ["--build-arg", "VERSION=" + SHA, "-t", image, "."])
                 self.assertEqual(build[1]["timeout"], 600)
                 self.assertIn((["docker", "run", "--rm", IMAGE_ID, "help"], {"expected": 2}), run.calls)
 
     def test_private_module_cache_is_a_local_named_build_context(self):
         with tempfile.TemporaryDirectory(prefix="cache with spaces ") as cache:
             runner = Runner()
-            IMAGE.build_images("assistant", True, SHA, environ={"FINASSIST_GO_MODULE_CACHE": cache}, run=runner)
-            self.assertEqual(runner.calls[0][0], [
-                "docker", "build", "--build-context", "go-module-cache=" + cache,
+            IMAGE.build_images("assistant", True, SHA, builder=BUILDER, environ={"FINASSIST_GO_MODULE_CACHE": cache}, run=runner)
+            self.assertEqual(runner.calls[1][0], BUILD + [
+                "--build-context", "go-module-cache=" + cache,
                 "--build-arg", "VERSION=" + SHA, "-t", "assistant:ci", ".",
             ])
         for remote in ("https://example.org", "docker-image://example.org", "/nonexistent/cache"):
             runner = Runner()
             with self.subTest(remote=remote), self.assertRaises(ValueError):
-                IMAGE.build_images("assistant", False, SHA,
+                IMAGE.build_images("assistant", False, SHA, builder=BUILDER,
                                    environ={"FINASSIST_GO_MODULE_CACHE": remote}, run=runner)
             self.assertFalse(runner.calls)
 
@@ -103,13 +122,13 @@ class ImageSmokeTests(unittest.TestCase):
             with self.subTest(service=service, fake=fake, sha=sha):
                 run = Runner()
                 with self.assertRaises(ValueError):
-                    IMAGE.build_images(service, fake, sha, environ={}, run=run)
+                    IMAGE.build_images(service, fake, sha, builder=BUILDER, environ={}, run=run)
                 self.assertFalse(run.calls)
 
     def test_smoke_and_outputs_share_captured_ids_even_when_tags_move(self):
         run = Runner()
         ids = {}
-        image = IMAGE.build_images("assistant", True, SHA, environ={}, run=run, image_ids=ids)
+        image = IMAGE.build_images("assistant", True, SHA, builder=BUILDER, environ={}, run=run, image_ids=ids)
         self.assertEqual(image, "assistant:ci")
         self.assertEqual(ids, {"image_id": IMAGE_ID, "fake_image_id": FAKE_ID})
         smokes = [args for args, _ in run.calls if args[:3] == ["docker", "run", "--rm"]]
@@ -132,7 +151,7 @@ class ImageSmokeTests(unittest.TestCase):
                         return "invalid output"
                     return runner(arguments, **options)
                 with self.assertRaises((ValueError, RuntimeError)):
-                    IMAGE.build_images("assistant", True, SHA, environ={}, run=run, image_ids=ids)
+                    IMAGE.build_images("assistant", True, SHA, builder=BUILDER, environ={}, run=run, image_ids=ids)
                 self.assertEqual(ids, {})
 
     def test_optional_token_is_a_private_file_and_always_removed(self):
@@ -141,7 +160,9 @@ class ImageSmokeTests(unittest.TestCase):
                 paths = []
 
                 def run(arguments, **options):
-                    if arguments[:2] == ["docker", "build"]:
+                    if arguments[:2] == ["git", "show"]:
+                        return SOURCE_EPOCH
+                    if arguments[:3] == ["docker", "buildx", "build"]:
                         value = arguments[arguments.index("--secret") + 1]
                         path = Path(value.removeprefix("id=netrc,src="))
                         paths.append(path)
@@ -155,24 +176,26 @@ class ImageSmokeTests(unittest.TestCase):
                 environment = {"GO_MODULES_TOKEN": "sample-token", "RUNNER_TEMP": directory}
                 if failure:
                     with self.assertRaisesRegex(RuntimeError, "build failed"):
-                        IMAGE.build_images("service", False, SHA, environ=environment, run=run)
+                        IMAGE.build_images("service", False, SHA, builder=BUILDER, environ=environment, run=run)
                 else:
-                    IMAGE.build_images("service", False, SHA, environ=environment, run=run)
+                    IMAGE.build_images("service", False, SHA, builder=BUILDER, environ=environment, run=run)
                 self.assertEqual(len(paths), 1)
                 self.assertFalse(paths[0].exists())
 
     def test_missing_help_output_fails_before_artifact_can_be_created(self):
         def run(arguments, **options):
+            if arguments[:2] == ["git", "show"]:
+                return SOURCE_EPOCH
             return IMAGE_ID if arguments[:3] == ["docker", "image", "inspect"] else "unrelated output"
 
         with self.assertRaisesRegex(RuntimeError, "usage:"):
-            IMAGE.build_images("service", False, SHA, environ={}, run=run)
+            IMAGE.build_images("service", False, SHA, builder=BUILDER, environ={}, run=run)
 
     def test_assistant_builds_and_smokes_fake_provider_only_when_requested(self):
         for enabled in [False, True]:
             with self.subTest(fake_llm=enabled):
                 run = Runner()
-                IMAGE.build_images("assistant", enabled, SHA, environ={}, run=run)
+                IMAGE.build_images("assistant", enabled, SHA, builder=BUILDER, environ={}, run=run)
                 fake_builds = [args for args, _ in run.calls if "Dockerfile.fake-llm" in args]
                 self.assertEqual(len(fake_builds), int(enabled))
                 if enabled:
@@ -180,7 +203,7 @@ class ImageSmokeTests(unittest.TestCase):
 
     def test_bff_production_refusal_and_listener_shutdown_checks(self):
         run = Runner()
-        IMAGE.build_images("bank-bff", False, SHA, environ={}, run=run)
+        IMAGE.build_images("bank-bff", False, SHA, builder=BUILDER, environ={}, run=run)
         self.assertIn((["docker", "run", "--rm", IMAGE_ID, "serve"], {"expected": 1}), run.calls)
         public = [args[-1] for args, _ in run.calls if args[0] == "curl" and "%{http_code}" in args]
         self.assertEqual(public, ["http://127.0.0.1:18080" + path
@@ -198,7 +221,7 @@ class ImageSmokeTests(unittest.TestCase):
                 run = Runner()
                 setattr(run, property_name, value)
                 with self.assertRaises(RuntimeError):
-                    IMAGE.build_images("bank-bff", False, SHA, environ={}, run=run)
+                    IMAGE.build_images("bank-bff", False, SHA, builder=BUILDER, environ={}, run=run)
                 self.assertEqual(run.calls[-1][0][:3], ["docker", "rm", "-f"])
 
     def test_bff_rejects_wrong_prod_failure_reason_before_starting_dev(self):
@@ -210,7 +233,7 @@ class ImageSmokeTests(unittest.TestCase):
             return run(arguments, **options)
 
         with self.assertRaisesRegex(RuntimeError, "USER_GRPC_ADDR"):
-            IMAGE.build_images("bank-bff", False, SHA, environ={}, run=wrong_reason)
+            IMAGE.build_images("bank-bff", False, SHA, builder=BUILDER, environ={}, run=wrong_reason)
         self.assertFalse(any("--name" in args for args, _ in run.calls))
 
     def test_command_passes_deadline_and_removes_token_from_child_environment(self):

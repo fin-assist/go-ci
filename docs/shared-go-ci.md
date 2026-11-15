@@ -155,7 +155,7 @@ Renovate меняет pins, но не копирует `scripts/common_ci.py`. �
 
 `shared-image.yml` собирает образ, выполняет smoke и извлекает stage-бинарь
 из того же image ID. Для пяти production-сервисов передайте
-`prepare_production: true` в `image-check`. На push в `main` CI сохраняет
+`prepare_production: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}` в `image-check`. На push в `main` CI сохраняет
 архив основного образа и его контрольную сумму. Сборка использует права
 чтения. Вынесенная публикация сохраняет отдельный результат CI для stage.
 
@@ -174,6 +174,11 @@ permissions:
   contents: read
 jobs:
   publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     permissions:
       actions: read
       contents: read

@@ -66,7 +66,7 @@ if (existsSync(manifestPath) && revision === undefined) {
   assert.ok(shared.length >= 3, 'All branch-backed shared workflows must be visible to the Actions manager');
   for (const dep of shared) {
     normalizeDepNames(dep);
-    assert.equal(dep.currentValue, 'refs/heads/main');
+    assert.equal(dep.currentValue, 'main');
     assert.equal(dep.currentDigest, undefined);
     const configured = await applyPackageRules({ ...dep, manager: 'github-actions', packageFile: file, packageRules: effective.packageRules });
     assert.equal(configured.enabled, false, 'Shared branch references must not receive digest bumps');

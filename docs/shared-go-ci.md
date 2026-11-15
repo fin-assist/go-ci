@@ -6,7 +6,7 @@
 
 ## Источник и неизменяемая ссылка
 
-По [FIN-516](https://finassist.youtrack.cloud/issue/FIN-516) потребители выбирают защищённую ветку `main` с явным Git ref `@refs/heads/main`. Это исключает неоднозначность между одноимёнными веткой и тегом. Новый запуск после мержа в `go-ci` получает новый workflow. Точные байты общего кода в пределах запуска определяет `job.workflow_sha`. Профиль и локальные исключения задаются в `.finassist-ci.json` без поля `revision`.
+По [FIN-516](https://finassist.youtrack.cloud/issue/FIN-516) потребители выбирают защищённую ветку `main` через `@main` в вызовах workflow и `@refs/heads/main` в вызовах Actions. Новый запуск после мержа в `go-ci` получает новый workflow. Точные байты общего кода в пределах запуска определяет `job.workflow_sha`. Профиль и локальные исключения задаются в `.finassist-ci.json` без поля `revision`.
 
 Локальные команды разрешают SHA `refs/heads/main` из приватного `go-ci`, используя локальную авторизацию GitHub CLI (`gh auth login`). Для воспроизведения проверки укажите SHA из отчёта сборки, например `FINASSIST_CI_REVISION=<sha> make lint`. Bootstrap продолжает проверять SHA, origin и содержимое локального кэша. Полный повтор workflow разрешает ветку заново, повтор отдельных упавших jobs сохраняет SHA прошлого запуска.
 
@@ -184,7 +184,7 @@ jobs:
       actions: read
       contents: read
       packages: write
-    uses: fin-assist/go-ci/.github/workflows/shared-production-image.yml@refs/heads/main
+    uses: fin-assist/go-ci/.github/workflows/shared-production-image.yml@main
 ```
 
 Publisher сверяет событие успешного push/main, идентичность репозитория,

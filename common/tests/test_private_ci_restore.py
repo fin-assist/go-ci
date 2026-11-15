@@ -107,7 +107,8 @@ class PrivateInputRestoreTests(unittest.TestCase):
         step = next(step for step in workflow["jobs"]["prepare"]["steps"] if step.get("id") == "attempt")
         repository = "fin-assist/assistant"
         allowed = {"full_name": repository}
-        shared = {"path": "fin-assist/go-ci/.github/workflows/shared-go.yml@refs/heads/main", "sha": BASE}
+        shared = {"path": "fin-assist/go-ci/.github/workflows/shared-go.yml@refs/heads/main",
+                  "ref": "refs/heads/main", "sha": BASE}
         details = {"event": "pull_request", "path": ".github/workflows/ci.yml",
                    "repository": allowed, "head_repository": allowed, "head_sha": SHA,
                    "head_branch": "tooling/update", "referenced_workflows": [shared]}
@@ -128,10 +129,14 @@ class PrivateInputRestoreTests(unittest.TestCase):
             env = {"PATH": directory + os.pathsep + os.environ["PATH"], "GITHUB_REPOSITORY": repository,
                    "GITHUB_REF": "refs/heads/main", "GITHUB_REF_PROTECTED": "true",
                    "SOURCE_RUN": "123", "SOURCE_ATTEMPT": "2", "GITHUB_OUTPUT": str(output)}
-            good = execute(step["run"], **env, DETAILS=json.dumps(details), PULLS=json.dumps([pull]))
-            self.assertEqual(good.returncode, 0, good.stderr)
-            self.assertEqual(output.read_text(), f"number=42\nhead={SHA}\nrevision={BASE}\n")
-            output.unlink()
+            for ref in ("main", "refs/heads/main"):
+                with self.subTest(metadata_ref=ref):
+                    candidate = shared | {"path": shared["path"].replace("refs/heads/main", ref)}
+                    attempt = details | {"referenced_workflows": [candidate]}
+                    good = execute(step["run"], **env, DETAILS=json.dumps(attempt), PULLS=json.dumps([pull]))
+                    self.assertEqual(good.returncode, 0, good.stderr)
+                    self.assertEqual(output.read_text(), f"number=42\nhead={SHA}\nrevision={BASE}\n")
+                    output.unlink()
             pinned = shared | {"path": shared["path"].replace("refs/heads/main", BASE)}
             legacy = execute(step["run"], **env,
                              DETAILS=json.dumps(details | {"referenced_workflows": [pinned]}), PULLS="[]")
@@ -155,6 +160,8 @@ class PrivateInputRestoreTests(unittest.TestCase):
                 ({"head_repository": {"full_name": "fork/assistant"}}, [pull]),
                 ({"path": ".github/workflows/other.yml"}, [pull]),
                 ({"referenced_workflows": [shared, shared | {"sha": SHA}]}, [pull]),
+                ({"referenced_workflows": [shared | {"path": shared["path"].replace("refs/heads/main", "main"),
+                                                      "ref": "refs/tags/main"}]}, [pull]),
                 ({"referenced_workflows": [shared | {"path": shared["path"].replace("refs/heads/", "refs/tags/")}]}, [pull]),
                 ({}, []), ({}, [pull, pull]),
             ):

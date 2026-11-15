@@ -75,7 +75,8 @@ jobs:
                (($shared | length) > 0 and all($shared[]; .path | test("@[0-9a-f]{40}$"))) then
               "legacy"
             else
-              [$shared[] | select(.path | endswith("@refs/heads/main")) | .sha] as $refs |
+              [$shared[] | select(.ref == "refs/heads/main" and
+                (.path | endswith("@main") or endswith("@refs/heads/main"))) | .sha] as $refs |
               select(($refs | length) == ($shared | length) and ($refs | unique | length) == 1) |
               [$run.head_sha, $run.head_branch, $refs[0]] | @tsv
             end

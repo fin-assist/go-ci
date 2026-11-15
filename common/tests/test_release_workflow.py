@@ -64,6 +64,11 @@ sys.exit(1)
 '''
 
 
+def notes_script():
+    action = ROOT / '.github/actions/service-release-notes/action.yml'
+    return yaml.safe_load(action.read_text())['runs']['steps'][0]['run']
+
+
 class ReleasePublicationTests(unittest.TestCase):
     def publish(self, initial, attempts=1):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,7 +78,8 @@ class ReleasePublicationTests(unittest.TestCase):
             gh = root / 'gh'
             gh.write_text(FAKE_GH)
             env = dict(os.environ, TAG='v0.1.1', FAKE_GITHUB=directory, FAKE_PYTHON=sys.executable, FAKE_GH_SCRIPT=str(gh),
-                       PATH=directory + os.pathsep + os.environ['PATH'])
+                       PATH=directory + os.pathsep + os.environ['PATH'],
+                       GITHUB_ACTION_PATH=str(ROOT / '.github/actions/service-release-notes'))
             results = [subprocess.run(
                 ['/bin/bash', '-e', '-o', 'pipefail', '-c', FAKE_GH_COMMAND + workflow_script('GitHub release')],
                 cwd=root, env=env, capture_output=True, text=True, timeout=10)
@@ -158,16 +164,14 @@ class ReleaseValidationTests(unittest.TestCase):
                 # Model checkout fetch-depth:0 while its own credential is present.
                 git('fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main')
             git('checkout', '--detach', tag)
-            source = root / '.finassist-ci/source/common/scripts'
-            source.mkdir(parents=True)
-            (source / 'changelog.py').write_text((COMMON / 'scripts/changelog.py').read_text())
             (root / 'state.json').write_text(json.dumps({'exists': True, 'notes': 'Owner notes'}))
             gh = root / 'gh'
             gh.write_text(FAKE_GH)
             env = dict(os.environ, TAG=tag, CI_REVISION='a'*40, CHECKOUT_VERSION=checkout_version, GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main', GITHUB_WORKSPACE=str(root), GITHUB_SHA=main_sha, FAKE_GITHUB=directory, FAKE_PYTHON=sys.executable, FAKE_GH_SCRIPT=str(gh),
-                       PATH=directory + os.pathsep + os.environ['PATH'])
+                       PATH=directory + os.pathsep + os.environ['PATH'],
+                       GITHUB_ACTION_PATH=str(ROOT / '.github/actions/service-release-notes'))
             script = (FAKE_GH_COMMAND + workflow_script('Validate release invocation and immutable source') + '\n' + workflow_script('The tag is a release of this service') + '\n'
-                      + workflow_script('GitHub release'))
+                      + notes_script() + '\n' + workflow_script('GitHub release'))
             result = subprocess.run(['/bin/bash', '-e', '-o', 'pipefail', '-c', script],
                                     cwd=root, env=env, capture_output=True, text=True, timeout=15)
             calls = root / 'calls.jsonl'
@@ -225,8 +229,9 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(set(trigger), {"workflow_call"})
         inputs = trigger["workflow_call"]["inputs"]
         self.assertEqual(set(inputs), {"revision", "tag", "checkout_version"})
-        self.assertTrue(all(inputs[key]["type"] == "string" and inputs[key]["required"] is True
-                            for key in ("revision", "tag")))
+        self.assertEqual(inputs["revision"]["type"], "string")
+        self.assertIs(inputs["revision"]["required"], False)
+        self.assertIs(inputs["tag"]["required"], True)
         self.assertEqual(inputs["checkout_version"], {
             "description": "Preserve the service release checkout major (v4 or v7)",
             "required": False, "default": "v4", "type": "string"})
@@ -239,9 +244,9 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", job["if"])
         self.assertIn("github.ref == 'refs/heads/main'", job["if"])
         steps = job["steps"]
-        self.assertEqual(steps[0]["name"], "Validate release invocation and immutable source")
+        self.assertEqual(steps[0]["name"], "Resolve the shared workflow revision")
         checkouts = [step for step in steps if step.get("uses", "").startswith("actions/checkout@")]
-        self.assertEqual(len(checkouts), 3)
+        self.assertEqual(len(checkouts), 2)
         for step in checkouts:
             self.assertRegex(step["uses"], r"^actions/checkout@[0-9a-f]{40}$")
             self.assertIs(step["with"]["persist-credentials"], False)
@@ -251,19 +256,15 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertEqual(step["if"], "inputs.checkout_version == '" + version + "'")
             self.assertEqual(step["with"]["ref"], "refs/tags/${{ inputs.tag }}")
             self.assertEqual(step["with"]["fetch-depth"], 0)
-        self.assertNotIn("if", checkouts[2])
-        self.assertEqual(checkouts[2]["uses"], "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
-        source = checkouts[2]["with"]
-        self.assertEqual(source["repository"], "fin-assist/go-ci")
-        self.assertEqual(source["ref"], "${{ inputs.revision }}")
-        self.assertEqual(source["path"], ".finassist-ci/source")
+        notes = next(step for step in steps if step.get("name") == "Prepare service release notes")
+        self.assertEqual(notes["uses"], "$/.github/actions/service-release-notes")
         for step in steps:
             self.assertNotIn("${{", step.get("run", ""))
             if "GH_TOKEN" in step.get("env", {}):
                 self.assertEqual(step["name"], "GitHub release")
         validation = workflow_script("The tag is a release of this service")
         self.assertNotIn("python3 scripts/", validation)
-        self.assertIn('--root "$GITHUB_WORKSPACE"', validation)
+        self.assertIn('--root "$GITHUB_WORKSPACE"', notes_script())
         self.assertIn('git show-ref --verify --quiet refs/remotes/origin/main', validation)
         self.assertNotIn('git fetch', validation)
         self.assertNotIn('gh release edit', workflow_script("GitHub release"))

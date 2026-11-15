@@ -40,6 +40,20 @@ class PrivateInputsDiscoveryTest(unittest.TestCase):
             with self.subTest(head=head, base=base), self.assertRaises(ValueError):
                 inputs.artifact_name(head, base)
 
+    def test_branch_inputs_ignore_artifacts_from_other_revisions_and_legacy_events(self):
+        revision = "3" * 40
+        current = inputs.artifact_name(HEAD, BASE, revision)
+        self.assertEqual(current, f"private-ci-source-{HEAD}-{revision}")
+        self.assertEqual(inputs.artifact_name(HEAD, "f" * 40, revision), current)
+        self.assertEqual(inputs.artifact_name(HEAD, revision=revision), current)
+        get = Mock(side_effect=[
+            {"total_count": 3, "artifacts": [artifact(3, name=f"private-ci-source-{HEAD}-{BASE}"),
+                                              artifact(2, name=current), artifact(1, name=current)]},
+            run(2), run(1, event="workflow_run"),
+        ])
+        self.assertEqual(inputs.producer_run(get, REPOSITORY, current, event="workflow_run"), 1)
+        self.assertEqual([call.args[0] for call in get.call_args_list], ["artifacts", "runs/2", "runs/1"])
+
     def test_rejects_expired_and_foreign_runs_and_reuses_valid_run(self):
         artifacts = [artifact(6), artifact(1), artifact(3), artifact(5), artifact(4),
                      artifact(8, name="wrong"), artifact(7, expired=True), artifact(2)]

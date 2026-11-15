@@ -40,6 +40,17 @@ class PrepareQase90Tests(unittest.TestCase):
                                      GITHUB_REF="refs/heads/fin491-ci-bootstrap").returncode, 0)
             self.assertNotEqual(execute(script, directory, **dispatch,
                                         GITHUB_REF="refs/heads/main").returncode, 0)
+            workflow_run = valid | {
+                "GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REF": "refs/heads/main",
+                "GITHUB_REF_PROTECTED": "true", "SOURCE_EVENT": "pull_request", "RUN_ACTION": "in_progress",
+            }
+            self.assertEqual(execute(script, directory, **workflow_run).returncode, 0)
+            for change in ({"HEAD_REPO": "fork/bank-bff"}, {"GITHUB_REF": "refs/heads/topic"},
+                           {"GITHUB_REF_PROTECTED": "false"}, {"SOURCE_EVENT": "push"},
+                           {"RUN_ACTION": "completed"}):
+                with self.subTest(workflow_run=change):
+                    result = execute(script, directory, **(workflow_run | change))
+                    self.assertNotEqual(result.returncode, 0)
             for invalid in ({"HEAD_REPO": "fork/bank-bff"}, {"GITHUB_REPOSITORY": "fin-assist/other"},
                             {"GITHUB_EVENT_NAME": "pull_request"}, {"BSD_REVISION": "main"}):
                 with self.subTest(invalid=invalid):

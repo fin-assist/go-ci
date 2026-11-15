@@ -11,7 +11,7 @@ on:
         type: string
       revision:
         description: Full SHA of the shared source used by the caller
-        required: true
+        required: false
         type: string
       profile:
         description: Go module profile (service or library)
@@ -38,7 +38,6 @@ permissions:
 env:
   GOPRIVATE: github.com/fin-assist/*
   CI: 'true'
-  SHARED_REVISION: ${{ inputs.revision }}
   SHARED_QUALITY: ${{ inputs.quality_runner }}
 
 jobs:
@@ -47,32 +46,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Validate shared profile and revision
+      - name: Resolve the shared workflow revision
         env:
-          SHARED_REVISION: ${{ inputs.revision }}
+          RESOLVED_SHA: ${{ inputs.revision || job.workflow_sha }}
+        run: |
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'SHARED_REVISION=%s\nFINASSIST_CI_REVISION=%s\n' "$RESOLVED_SHA" "$RESOLVED_SHA" >> "$GITHUB_ENV"
+          printf 'Go CI source: `%s`\n' "$RESOLVED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate shared profile
+        env:
           SHARED_PROFILE: ${{ inputs.profile }}
         run: |
-          [[ "$SHARED_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo 'revision must be a full lowercase commit SHA' >&2; exit 1; }
           case "$SHARED_PROFILE" in service|library) ;; *) echo 'Unknown Go CI profile' >&2; exit 1 ;; esac
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Match the local source and profile
         env:
-          SHARED_REVISION: ${{ inputs.revision }}
           SHARED_PROFILE: ${{ inputs.profile }}
         run: |
           python3 - <<'PY'
           import json, os
           config = json.load(open('.finassist-ci.json'))
-          if config['revision'] != os.environ['SHARED_REVISION'] or config['profile'] != os.environ['SHARED_PROFILE']:
+          if config.get('revision', os.environ['SHARED_REVISION']) != os.environ['SHARED_REVISION'] or config['profile'] != os.environ['SHARED_PROFILE']:
               raise SystemExit('Local and CI source/profile differ')
           PY
       - name: Restore private CI inputs
         if: github.event_name == 'pull_request'
-        uses: fin-assist/go-ci/.github/actions/restore-private-ci@540e614a1272237b05a0258cfa6be333a97fb0d5
+        uses: $/.github/actions/restore-private-ci
         with:
-          revision: ${{ inputs.revision }}
+          branch-mode: ${{ inputs.revision == '' && 'true' || 'false' }}
+          revision: ${{ env.SHARED_REVISION }}
           run-id: ${{ inputs.private_input_run_id }}
           artifact-name: ${{ inputs.private_input_artifact }}
       - name: Checkout private CI source on trusted pushes
@@ -80,15 +84,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: fin-assist/go-ci
-          ref: ${{ inputs.revision }}
+          ref: ${{ env.SHARED_REVISION }}
           token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
-          path: .finassist-ci/${{ inputs.revision }}
+          path: .finassist-ci/${{ env.SHARED_REVISION }}
           persist-credentials: false
       - name: Set the canonical go-ci cache origin
         if: github.event_name == 'push'
-        env:
-          REVISION: ${{ inputs.revision }}
-        run: git -C ".finassist-ci/$REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
+        run: git -C ".finassist-ci/$SHARED_REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

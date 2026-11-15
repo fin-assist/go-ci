@@ -5,7 +5,7 @@ on:
     inputs:
       revision:
         description: Full SHA of the reviewed publisher workflow
-        required: true
+        required: false
         type: string
     outputs:
       image:
@@ -39,7 +39,7 @@ jobs:
       - name: Validate publication context
         id: source
         env:
-          PUBLISHER_SHA: ${{ inputs.revision }}
+          PUBLISHER_SHA: ${{ inputs.revision || job.workflow_sha }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_run
@@ -163,7 +163,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARCHIVE_CONFIG_DIGEST: ${{ steps.validated.outputs.config_digest }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
-          PUBLISHER_SHA: ${{ inputs.revision }}
+          PUBLISHER_SHA: ${{ inputs.revision || job.workflow_sha }}
         run: |
           set -euo pipefail
           service="${GITHUB_REPOSITORY#fin-assist/}"

@@ -257,13 +257,11 @@ class ImageWorkflowTests(unittest.TestCase):
         self.assertLess(steps.index(caller), steps.index(validation))
         self.assertLess(steps.index(validation), steps.index(source))
         self.assertEqual(source["with"]["repository"], "fin-assist/go-ci")
-        self.assertEqual(source["with"]["ref"], "${{ inputs.revision }}")
+        self.assertEqual(source["with"]["ref"], "${{ env.CI_REVISION }}")
 
     def test_revision_service_and_local_pin_are_validated_before_source_checkout(self):
         title = "Validate immutable source and image profile"
         self.assertEqual(self.run_step(title).returncode, 0)
-        for revision in ["main", "", "a" * 39, "a" * 41, "$(exit 0)"]:
-            self.assertNotEqual(self.run_step(title, revision=revision).returncode, 0)
         for service in ["unknown", "service;true", "$(exit 0)"]:
             self.assertNotEqual(self.run_step(title, service=service).returncode, 0)
         self.assertNotEqual(self.run_step(title, service="user", fake="true").returncode, 0)

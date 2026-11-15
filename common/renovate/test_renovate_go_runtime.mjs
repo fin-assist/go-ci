@@ -16,6 +16,7 @@ const { GlobalConfig } = await mod('config/global.js');
 GlobalConfig.set({ localDir: process.cwd() });
 const { extractPackageFile } = await mod('modules/manager/github-actions/extract.js');
 const { applyPackageRules } = await mod('util/package-rules/index.js');
+const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
 const root = process.env.RENOVATE_CONSUMER_ROOT;
 const baseline = JSON.parse(readFileSync(resolve(root, 'renovate-base.json')));
 let workflow;
@@ -53,8 +54,28 @@ console.log(source ? 'PASS: source uses-with Go extraction is disabled by baseli
 // stops updating source-revision, as well as action pins split into another group.
 const manifestPath = existsSync(resolve(root, '.finassist-ci.json'))
   ? resolve(root, '.finassist-ci.json') : resolve(root, '.github/renovate-source.json');
-if (existsSync(manifestPath)) {
-  const revision = JSON.parse(readFileSync(manifestPath)).revision;
+const revision = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath)).revision : undefined;
+if (existsSync(manifestPath) && revision === undefined) {
+  const { mergeChildConfig } = await mod('config/utils.js');
+  const active = JSON.parse(readFileSync(resolve(root, 'renovate.json')));
+  const effective = mergeChildConfig(baseline, active);
+  const file = '.github/workflows/ci.yml';
+  const content = readFileSync(resolve(root, file), 'utf8');
+  const extracted = (await extractPackageFile(content, file))?.deps ?? [];
+  const shared = extracted.filter(dep => dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci');
+  assert.ok(shared.length >= 3, 'All branch-backed shared workflows must be visible to the Actions manager');
+  for (const dep of shared) {
+    normalizeDepNames(dep);
+    assert.equal(dep.currentValue, 'refs/heads/main');
+    assert.equal(dep.currentDigest, undefined);
+    const configured = await applyPackageRules({ ...dep, manager: 'github-actions', packageFile: file, packageRules: effective.packageRules });
+    assert.equal(configured.enabled, false, 'Shared branch references must not receive digest bumps');
+  }
+  assert.ok((effective.customManagers ?? []).every(manager => manager.depNameTemplate !== 'fin-assist/go-ci'),
+    'Obsolete SHA managers must be removed');
+  console.log('PASS: actual Renovate Actions extraction disables bumps for the shared branch');
+}
+if (revision !== undefined) {
   const { mergeChildConfig } = await mod('config/utils.js');
   // FIN-260 keeps the shared CI managers/rules directly in renovate.json in
   // three libraries. Apply Renovate's real merge semantics to both data layers.
@@ -62,7 +83,6 @@ if (existsSync(manifestPath)) {
   const effective = mergeChildConfig(baseline, active);
   const { extractPackageFile: extractRegex } = await mod('modules/manager/custom/regex/index.js');
   const { matchRegexOrGlob } = await mod('util/string-match.js');
-  const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
   async function customDependencies(config, file) {
     const content = readFileSync(resolve(root, file), 'utf8');
     const result = [];

@@ -1,0 +1,28 @@
+name: Find prepared inputs for this CI revision
+
+on:
+  workflow_call:
+    outputs:
+      run_id:
+        value: ${{ jobs.find.outputs.run_id }}
+      artifact_name:
+        value: ${{ jobs.find.outputs.artifact_name }}
+
+permissions:
+  actions: read
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    outputs:
+      run_id: ${{ steps.inputs.outputs.run-id }}
+      artifact_name: ${{ steps.inputs.outputs.artifact-name }}
+    steps:
+      - id: inputs
+        uses: $/.github/actions/private-ci-inputs
+        with:
+          token: ${{ github.token }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          revision: ${{ job.workflow_sha }}
+          timeout-seconds: '600'

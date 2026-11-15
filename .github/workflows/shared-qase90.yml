@@ -1,0 +1,93 @@
+name: Qase 90 cross-service
+
+on:
+  workflow_call:
+    inputs:
+      bsd_revision:
+        required: true
+        type: string
+      analytics_revision:
+        required: true
+        type: string
+    secrets:
+      GO_MODULES_TOKEN:
+        required: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  qase90:
+    name: Qase 90 cross-service
+    if: github.repository == 'fin-assist/bank-bff' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: qase90-local-test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 12
+    env:
+      GOPRIVATE: github.com/fin-assist/*
+      TEST_DATABASE_URL: postgres://postgres:qase90-local-test@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Find the prepared inputs for this PR
+        id: prepared
+        if: github.event_name == 'pull_request'
+        uses: $/.github/actions/private-ci-inputs
+        with:
+          token: ${{ github.token }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          revision: ${{ job.workflow_sha }}
+          timeout-seconds: '600'
+      - name: Restore private inputs without cross-repository credentials
+        if: github.event_name == 'pull_request'
+        uses: $/.github/actions/restore-private-ci
+        with:
+          branch-mode: 'true'
+          revision: ${{ job.workflow_sha }}
+          run-id: ${{ steps.prepared.outputs.run-id }}
+          artifact-name: ${{ steps.prepared.outputs.artifact-name }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'push'
+        with:
+          repository: fin-assist/bank-statement-data
+          ref: ${{ inputs.bsd_revision }}
+          path: .qase90/bsd
+          token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'push'
+        with:
+          repository: fin-assist/analytics
+          ref: ${{ inputs.analytics_revision }}
+          path: .qase90/analytics
+          token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          persist-credentials: false
+      - name: Cross-service Qase 90 with prepared PR inputs
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/qase90.py --prepared "$RUNNER_TEMP/finassist-private-ci"
+      - name: Cross-service Qase 90 on main
+        if: github.event_name == 'push'
+        env:
+          MODULES_TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$MODULES_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth"
+          unset MODULES_TOKEN
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/fin-assist/.extraHeader \
+          GIT_CONFIG_VALUE_0="Authorization: Basic $auth" \
+            python3 scripts/qase90.py --bsd .qase90/bsd --analytics .qase90/analytics

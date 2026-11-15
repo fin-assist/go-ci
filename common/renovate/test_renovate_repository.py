@@ -19,12 +19,18 @@ class RepositoryPolicyTests(unittest.TestCase):
                       if rule.get('matchManagers') == ['gomod'])
         self.assertEqual(set(manual['matchDepTypes']), {'golang', 'toolchain'})
         self.assertIs(manual['enabled'], False)
-        shared = next(rule for rule in baseline['packageRules']
-                      if rule.get('groupSlug') == 'finassist-shared-go-ci')
-        self.assertEqual(shared['groupName'], 'FinAssist shared Go CI')
-        self.assertIs(shared['pinDigests'], True)
-        self.assertEqual(len(baseline['customManagers']), 2)
         root = json.loads((ROOT / 'renovate.json').read_text())
+        pinned = 'revision' in json.loads((ROOT / '.finassist-ci.json').read_text())
+        if pinned:
+            shared = next(rule for rule in baseline['packageRules']
+                          if rule.get('groupSlug') == 'finassist-shared-go-ci')
+            self.assertEqual(shared['groupName'], 'FinAssist shared Go CI')
+            self.assertIs(shared['pinDigests'], True)
+            self.assertEqual(len(baseline['customManagers']), 2)
+        else:
+            self.assertFalse(any(rule.get('groupSlug') == 'finassist-shared-go-ci' for rule in baseline['packageRules']))
+            shared = next(rule for rule in root['packageRules'] if 'fin-assist/go-ci' in rule.get('matchPackageNames', []))
+            self.assertIs(shared['enabled'], False)
         if root.get('baseBranchPatterns') == ['main']:
             self.assertEqual(root['timezone'], 'Europe/Moscow')
             self.assertEqual(root['schedule'], ['* 0-8 * * 1'])
@@ -33,7 +39,7 @@ class RepositoryPolicyTests(unittest.TestCase):
             weekly = next(rule for rule in baseline['packageRules'] if rule.get('groupSlug') == 'weekly-dependencies')
             self.assertEqual(weekly['matchPackageNames'], ['*'])
             self.assertCountEqual(weekly['matchUpdateTypes'], ['minor', 'patch', 'digest', 'pin', 'pinDigest'])
-        else:
+        elif pinned:
             self.assertEqual(shared['schedule'], ['at any time'])
             self.assertEqual(len(baseline['packageRules']), 3)
         self.assertEqual(root['extends'], ['local>fin-assist/bank-bff:base#renovate-policy',

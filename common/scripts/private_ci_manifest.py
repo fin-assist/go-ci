@@ -21,7 +21,7 @@ def manifest(directory: Path, revision: str) -> dict:
     if not SHA.fullmatch(revision):
         raise ValueError("A full go-ci SHA is required.")
     config = json.loads((directory / ".finassist-ci.json").read_bytes())
-    if config["revision"] != revision:
+    if config.get("revision", revision) != revision:
         raise ValueError("Prepared source and consumer pin differ.")
     return {
         "revision": revision,

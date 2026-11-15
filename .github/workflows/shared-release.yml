@@ -5,7 +5,7 @@ on:
     inputs:
       revision:
         description: Full commit SHA of the reviewed shared CI source
-        required: true
+        required: false
         type: string
       tag:
         description: Existing owner-created service version tag
@@ -29,9 +29,15 @@ jobs:
     timeout-minutes: 5
     env:
       TAG: ${{ inputs.tag }}
-      CI_REVISION: ${{ inputs.revision }}
       CHECKOUT_VERSION: ${{ inputs.checkout_version }}
     steps:
+      - name: Resolve the shared workflow revision
+        env:
+          RESOLVED_SHA: ${{ inputs.revision || job.workflow_sha }}
+        run: |
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'CI_REVISION=%s\nFINASSIST_CI_REVISION=%s\n' "$RESOLVED_SHA" "$RESOLVED_SHA" >> "$GITHUB_ENV"
+          printf 'Go CI source: `%s`\n' "$RESOLVED_SHA" >> "$GITHUB_STEP_SUMMARY"
       - name: Validate release invocation and immutable source
         run: |
           python3 - <<'PY'
@@ -63,13 +69,6 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Checkout the pinned shared release implementation
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: fin-assist/go-ci
-          ref: ${{ inputs.revision }}
-          path: .finassist-ci/source
-          persist-credentials: false
       - name: The tag is a release of this service
         run: |
           # fetch-depth:0 checkout fetched all heads while its read credential was
@@ -80,12 +79,10 @@ jobs:
             echo "$TAG does not point to a commit on main"
             exit 1
           fi
-          python3 .finassist-ci/source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" check
-          if [ "$(python3 .finassist-ci/source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" latest)" != "$TAG" ]; then
-            echo "The newest section of CHANGELOG.md is not $TAG: merge the release PR first"
-            exit 1
-          fi
-          python3 .finassist-ci/source/common/scripts/changelog.py --root "$GITHUB_WORKSPACE" notes "$TAG" > notes.md
+      - name: Prepare service release notes
+        uses: $/.github/actions/service-release-notes
+        with:
+          tag: ${{ inputs.tag }}
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

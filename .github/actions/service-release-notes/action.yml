@@ -1,0 +1,21 @@
+name: Prepare service release notes
+description: Validate and extract release notes using the running shared workflow revision.
+inputs:
+  tag:
+    description: Existing service release tag.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate the changelog and extract release notes
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+      run: |
+        parser="$GITHUB_ACTION_PATH/../../../common/scripts/changelog.py"
+        python3 "$parser" --root "$GITHUB_WORKSPACE" check
+        if [ "$(python3 "$parser" --root "$GITHUB_WORKSPACE" latest)" != "$TAG" ]; then
+          echo "The newest section of CHANGELOG.md is not $TAG: merge the release PR first"
+          exit 1
+        fi
+        python3 "$parser" --root "$GITHUB_WORKSPACE" notes "$TAG" > notes.md

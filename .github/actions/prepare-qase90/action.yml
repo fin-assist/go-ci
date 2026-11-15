@@ -17,13 +17,22 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.read-token }}
-        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.event.workflow_run.head_repository.full_name }}
+        SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+        RUN_ACTION: ${{ github.event.action }}
         BSD_REVISION: ${{ inputs.bsd-revision }}
         ANALYTICS_REVISION: ${{ inputs.analytics-revision }}
       run: |
         test "$GITHUB_REPOSITORY" = fin-assist/bank-bff
         case "$GITHUB_EVENT_NAME" in
           pull_request_target) test "$HEAD_REPO" = "$GITHUB_REPOSITORY" ;;
+          workflow_run)
+            test "$HEAD_REPO" = "$GITHUB_REPOSITORY"
+            test "$GITHUB_REF" = refs/heads/main
+            test "$GITHUB_REF_PROTECTED" = true
+            test "$SOURCE_EVENT" = pull_request
+            test "$RUN_ACTION" = in_progress
+            ;;
           workflow_dispatch) test "$GITHUB_REF" = refs/heads/fin491-ci-bootstrap ;;
           *) exit 1 ;;
         esac

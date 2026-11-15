@@ -16,6 +16,7 @@ const { GlobalConfig } = await mod('config/global.js');
 GlobalConfig.set({ localDir: process.cwd() });
 const { extractPackageFile } = await mod('modules/manager/github-actions/extract.js');
 const { applyPackageRules } = await mod('util/package-rules/index.js');
+const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
 const root = process.env.RENOVATE_CONSUMER_ROOT;
 const baseline = JSON.parse(readFileSync(resolve(root, 'renovate-base.json')));
 let workflow;
@@ -64,6 +65,7 @@ if (existsSync(manifestPath) && revision === undefined) {
   const shared = extracted.filter(dep => dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci');
   assert.ok(shared.length >= 3, 'All branch-backed shared workflows must be visible to the Actions manager');
   for (const dep of shared) {
+    normalizeDepNames(dep);
     assert.equal(dep.currentValue, 'refs/heads/main');
     assert.equal(dep.currentDigest, undefined);
     const configured = await applyPackageRules({ ...dep, manager: 'github-actions', packageFile: file, packageRules: effective.packageRules });
@@ -81,7 +83,6 @@ if (revision !== undefined) {
   const effective = mergeChildConfig(baseline, active);
   const { extractPackageFile: extractRegex } = await mod('modules/manager/custom/regex/index.js');
   const { matchRegexOrGlob } = await mod('util/string-match.js');
-  const { normalizeDepNames } = await mod('workers/repository/extract/manager-files.js');
   async function customDependencies(config, file) {
     const content = readFileSync(resolve(root, file), 'utf8');
     const result = [];

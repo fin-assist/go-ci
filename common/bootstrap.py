@@ -52,13 +52,17 @@ def git_output(root: Path, args: tuple[str, ...], text: bool):
     """Read bounded Git output without shell, hooks, prompts or replacement objects."""
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1")
-    if args[0] not in {"fetch", "ls-remote"}:
+    credentials = []
+    if args[0] in {"fetch", "ls-remote"}:
+        if shutil.which("gh"):
+            credentials = ["-c", "credential.https://github.com.helper=!gh auth git-credential"]
+    else:
         env["GIT_CONFIG_GLOBAL"] = os.devnull
     try:
         result = subprocess.run(
             ["git", "-c", "core.worktree=" + str(root.resolve()), "-c", "core.hooksPath=" + os.devnull,
              "-c", "core.fsmonitor=false", "-c", "protocol.allow=never",
-             "-c", "protocol.https.allow=always", *args],
+             "-c", "protocol.https.allow=always", *credentials, *args],
             cwd=root, env=env, check=True, capture_output=True, text=text, timeout=120)
     except (subprocess.SubprocessError, OSError) as error:
         # Git stderr can contain local credential helpers or authenticated URL rewrites.

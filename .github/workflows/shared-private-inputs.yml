@@ -71,7 +71,8 @@ jobs:
             . as $run |
             [.referenced_workflows[]? | select(.path |
               test("^fin-assist/go-ci/\\.github/workflows/shared-(go|lint|api|migrations|image|private-discovery|qase90)\\.yml@"))] as $shared |
-            if ($shared | length) > 0 and all($shared[]; .path | test("@[0-9a-f]{40}$")) then
+            if ($run.path == ".github/workflows/qase90.yml" and ($shared | length) == 0) or
+               (($shared | length) > 0 and all($shared[]; .path | test("@[0-9a-f]{40}$"))) then
               "legacy"
             else
               [$shared[] | select(.path | endswith("@refs/heads/main")) | .sha] as $refs |

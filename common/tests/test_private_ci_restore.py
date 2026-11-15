@@ -137,7 +137,13 @@ class PrivateInputRestoreTests(unittest.TestCase):
                              DETAILS=json.dumps(details | {"referenced_workflows": [pinned]}), PULLS="[]")
             self.assertEqual(legacy.returncode, 0, legacy.stderr)
             self.assertFalse(output.exists())
+            legacy_qase = execute(step["run"], **env, PULLS="[]",
+                                  DETAILS=json.dumps(details | {"path": ".github/workflows/qase90.yml",
+                                                               "referenced_workflows": []}))
+            self.assertEqual(legacy_qase.returncode, 0, legacy_qase.stderr)
+            self.assertFalse(output.exists())
             for update, pulls in (
+                ({"referenced_workflows": []}, [pull]),
                 ({"event": "push"}, [pull]),
                 ({"head_repository": {"full_name": "fork/assistant"}}, [pull]),
                 ({"path": ".github/workflows/other.yml"}, [pull]),

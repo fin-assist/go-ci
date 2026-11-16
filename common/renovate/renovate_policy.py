@@ -362,12 +362,21 @@ class GitHub:
         return {workflow: self.current_run(pr, workflow) for workflow in workflows}
 
     def workflow_jobs(self, run, names):
-        """Keep the latest execution of each job; earlier attempts may supply successes only."""
+        """Use current relay facades; legacy workflows may reuse earlier successful jobs."""
         selected = {}
         attempt = run['run_attempt']
         if type(attempt) is not int or not 1 <= attempt <= 50:
             return []
-        for number in range(attempt, 0, -1):
+        references = run.get('referenced_workflows', [])
+        if not isinstance(references, list):
+            return []
+        relayed = any(isinstance(item, dict) and isinstance(item.get('path'), str)
+                      and item['path'].startswith('fin-assist/go-ci/.github/workflows/shared-remote-ci.yml@')
+                      for item in references)
+        # Relay outputs belong to a source attempt. Old successful facades cannot
+        # certify a retried relay; ordinary failed-jobs retries rerun all red facades.
+        oldest = attempt if relayed else 1
+        for number in range(attempt, oldest - 1, -1):
             jobs = self.pages(f"actions/runs/{run['id']}/attempts/{number}/jobs", 'jobs')
             seen = set()
             for job in jobs:

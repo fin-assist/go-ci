@@ -5,9 +5,9 @@
 в его runner не исполняется код PR и не попадают приватные зависимости, бинарники
 или архивы образов. Это позволяет сохранить приватность сборок при публичном
 исходном репозитории. Наличие этого кода не означает, что потребители уже переведены.
-Первый caller — `go-service-template`; consumer contract разрешает новый путь
-только этому пилоту. Расширение на production-сервисы требует отдельного изменения
-контракта и миграции их callers после приёмки пилота.
+Первый caller — `go-service-template`. FIN-524 расширяет consumer contract на
+`assistant`, `user`, `analytics`, `bank-bff` и `bank-statement-data`; legacy callers
+остаются допустимы до их отдельной миграции и приёмки. Библиотеки не получают relay-профиль.
 
 ## Контракт запуска
 
@@ -28,6 +28,8 @@ Relay один раз вызывает `.github/workflows/service-ci.yml` в `in
 | `source_head_sha`, `source_base_sha` | Исходный head и base PR; у push base пуст |
 | `source_pr_number` | Номер PR, пустой у push |
 | `go_ci_sha` | Разрешённый SHA reusable workflow из `job.workflow_sha` |
+| `mode` | `service` по умолчанию; `qase90` только у bank-bff |
+| `qase90_revisions` | Пусто у service; JSON с ровно двумя полными SHA `bsd` и `analytics` у Qase 90 |
 
 Приватный workflow самостоятельно проверяет эти значения через GitHub API,
 историю Git и фактические `referenced_workflows` точной попытки источника. Payload
@@ -38,16 +40,39 @@ Relay ищет ровно один такой запуск с ожидаемым
 `workflow_dispatch`, `main` и первой попыткой. Он получает jobs через endpoint
 `/runs/<id>/attempts/1/jobs` и требует ровно один завершённый job с каждым именем
 `go`, `lint`, `image`, `migrations`, с тем же run ID и SHA приватного workflow.
-Для PR все четыре результата должны быть `success`; на push `migrations` должен
-быть `skipped`. Поле `accepted` становится `true` только при этих результатах
+Для PR все четыре результата должны быть `success`, кроме stateless bank-bff:
+его `migrations` всегда `skipped`. На push `migrations` также должен быть `skipped`. Поле `accepted` становится `true` только при этих результатах
 и успешном завершении всего приватного CI. Relay также возвращает
 `source_run_attempt`; исходные wrappers сверяют его с `github.run_attempt`, чтобы
 частичный повтор не принял сохранённые outputs прежней попытки. Wrappers продолжают
 создавать обязательные проверки с прежними именами от GitHub Actions.
+У bank-bff отдельный исходный workflow `Qase 90 cross-service` (`qase90.yml`)
+вызывает тот же relay с `mode: qase90` и двумя закреплёнными соседними ревизиями.
+Репозитории соседей фиксированы в infra; caller не может выбрать другой репозиторий.
+Broker проверяет их происхождение и подготавливает общий cache и bundles приватно.
+Имя приватного запуска — `Qase 90 CI fin-assist/bank-bff <run>/<attempt>`; relay
+проверяет ровно один job `qase90` и возвращает одноимённый output. Исходный facade
+сохраняет имя `Qase 90 cross-service` и те же accepted/current-attempt guards.
+Qase нельзя заменить успешными go/lint/image или опубликовать как production build.
+
+Для всех шести relayed callers consumer contract запрещает старые private-inputs
+и production-image workflows и любой source upload-artifact (включая merge).
+Из reusable workflows go-ci разрешены только remote relay и GitHub Release на main.
+У bank-bff сохраняются отдельный Qase 90 и последовательные unit/integration/API
+на одном runner по FIN-515; у остальных сервисов остаются параллельные suites.
+Пороги, обязательные contexts и данные политики Renovate не меняются.
+
 Если приватные проверки не прошли, relay сохраняет их результаты и ссылку в
 сводке, затем завершает job ошибкой. Поэтому повтор упавших jobs, которым
 пользуется Renovate, заново запускает relay и получает результат новой попытки.
 Если упал только wrapper после успешного relay, запустите **Re-run all jobs**.
+Автоматический retry такого wrapper не получает новой попытки relay: guard остаётся
+красным, Renovate сохраняет потраченный retry без merge, закрытия или нового комментария.
+Renovate распознаёт relay по `referenced_workflows` source run и принимает только
+facades его текущей попытки. Это не позволяет использовать прежний зелёный wrapper
+после частичного rerun relay. Штатный failed-jobs retry повторяет relay и все красные
+facades, а уже успешный отдельный workflow policy tests остаётся пригодным. Legacy
+callers сохраняют прежнюю семантику повторного использования успешных jobs.
 
 Опрос ограничен 75 минутами, сетевой timeout — 30 секундами, объём и число страниц
 ответов ограничены. Timeout каждого запроса учитывает оставшееся время общего дедлайна.
@@ -128,3 +153,14 @@ stage читает неизменяемый digest и проверяет provena
 Старый путь и его интерфейсы сохраняются для ещё не переведённых потребителей.
 Source PR, infra PR и миграция caller проходят отдельные ревью и сливаются только
 по команде владельца. Эти действия не разрешают удаление production-ресурсов.
+
+## Порядок FIN-524
+
+Сначала infra принимает прежние восемь полей dispatch как mode service и новый закрытый
+mode/Qase payload. Затем обновляется go-ci, затем каждый caller. Обычный service relay
+продолжает отправлять ровно прежние восемь полей, поэтому template работает и со старым
+broker при другом порядке merge или откате infra. Только Qase отправляет десять полей
+и требует обновлённый infra. В relayed caller
+не оставляют старый source producer или publisher. Для каждого сервиса нужны PR CI,
+реальный Renovate reconcile, приватная публикация из прошедшего CI и изолированный
+stage по digest; локальные contract/runtime fixtures не заменяют эту приёмку.

@@ -160,7 +160,7 @@ def suite(root, common):
             workflow = yaml.safe_load((root / '.github/workflows/ci.yml').read_text())
             if 'relay' in workflow['jobs']:
                 self.assertEqual(manifest['profile'], 'service')
-                self.assertEqual(modules, ['github.com/fin-assist/go-service-template'])
+                self.assertIn(modules[0], QUALITY_MODULES)
                 self.assertNotIn('revision', manifest)
                 self.assertEqual(set(workflow) - {'on', True}, {'name', 'permissions', 'jobs'})
                 self.assertEqual(workflow.get('name'), 'CI')
@@ -180,6 +180,10 @@ def suite(root, common):
                         'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}',
                     },
                 })
+                if modules[0] == 'github.com/fin-assist/bank-bff':
+                    self.qase90()
+                else:
+                    self.assertFalse((root / '.github/workflows/qase90.yml').exists())
                 # A second source-side artifact producer defeats private broker storage.
                 allowed_workflows = {
                     SOURCE + 'shared-remote-ci.yml@main', SOURCE + 'shared-release.yml@main',
@@ -286,7 +290,8 @@ def suite(root, common):
             pin = manifest.get('revision')
             ref = pin or MAIN
             if 'relay' in jobs:
-                self.service_quality(MAIN, None, 'github.com/fin-assist/go-service-template')
+                module = re.findall(r'(?m)^module\s+(\S+)\s*$', (root / 'go.mod').read_text())[0]
+                self.service_quality(MAIN, None, module)
                 return
             for kind in kinds:
                 with self.subTest(call=kind):
@@ -313,29 +318,80 @@ def suite(root, common):
                     expected_secrets = {} if kind == 'migrations' else {'GO_MODULES_TOKEN': PUSH_TOKEN}
                     self.assertEqual(call.get('secrets', {}), expected_secrets)
 
+        def remote_facade(self, gate, kind, dependency='relay', name=None, condition='always()'):
+            self.assertEqual(set(gate) - {'name'}, {
+                'needs', 'if', 'permissions', 'runs-on', 'timeout-minutes', 'env', 'steps'})
+            self.assertEqual(gate.get('name', kind), name or kind)
+            self.assertEqual(gate['needs'], dependency)
+            self.assertEqual(gate['if'], condition)
+            self.assertEqual(gate['permissions'], {})
+            self.assertEqual(gate['runs-on'], 'ubuntu-latest')
+            self.assertEqual(gate['timeout-minutes'], 2)
+            self.assertEqual(gate['env'], {
+                'RELAY_RESULT': '${{ needs.' + dependency + '.result }}',
+                'ACCEPTED': '${{ needs.' + dependency + '.outputs.accepted }}',
+                'SOURCE_RUN_ATTEMPT': '${{ needs.' + dependency + '.outputs.source_run_attempt }}',
+                'EXPECTED_RUN_ATTEMPT': '${{ github.run_attempt }}',
+                'RESULT': '${{ needs.' + dependency + '.outputs.' + kind + ' }}',
+            })
+            self.assertEqual(len(gate['steps']), 1)
+            step = gate['steps'][0]
+            self.assertEqual(set(step) - {'name'}, {'run'})
+            self.assertEqual(step['run'].strip(), RELAY_RUN)
+            # Execute the actual shell gate; stale successful receipts must stay red.
+            accepted_env = {'RELAY_RESULT': 'success', 'ACCEPTED': 'true',
+                            'SOURCE_RUN_ATTEMPT': '2', 'EXPECTED_RUN_ATTEMPT': '2', 'RESULT': 'success'}
+            cases = [({}, True), ({'SOURCE_RUN_ATTEMPT': '1', 'EXPECTED_RUN_ATTEMPT': '1'}, True)]
+            for key, values in {
+                'RELAY_RESULT': ('failure', 'skipped', 'cancelled', ''),
+                'ACCEPTED': ('false', '', 'True', 'success'),
+                'SOURCE_RUN_ATTEMPT': ('1', '3', '', '02'),
+                'RESULT': ('failure', 'skipped', 'cancelled', ''),
+            }.items():
+                cases.extend(({key: value}, False) for value in values)
+            for changed, allowed in cases:
+                result = subprocess.run(['bash', '-euo', 'pipefail', '-c', step['run']],
+                    env={**os.environ, **accepted_env, **changed}, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode == 0, allowed, changed)
+
+        def qase90(self):
+            workflow = yaml.safe_load((root / '.github/workflows/qase90.yml').read_text())
+            self.assertEqual(set(workflow) - {'on', True}, {'name', 'permissions', 'jobs'})
+            self.assertEqual(workflow['name'], 'Qase 90 cross-service')
+            self.assertEqual(workflow.get('on', workflow.get(True)), {
+                'pull_request': None, 'push': {'branches': ['main']}})
+            self.assertEqual(workflow['permissions'], {'contents': 'read'})
+            self.assertEqual(set(workflow['jobs']), {'qase90-check', 'qase90'})
+            call = dict(workflow['jobs']['qase90-check'])
+            self.assertEqual(' '.join(call.pop('if').split()), RELAY_CONDITION)
+            inputs = call.pop('with')
+            self.assertEqual(set(inputs), {'mode', 'qase90_revisions'})
+            self.assertEqual(inputs['mode'], 'qase90')
+            revisions = json.loads(inputs['qase90_revisions'])
+            self.assertEqual(set(revisions), {'bsd', 'analytics'})
+            for revision in revisions.values():
+                self.assertRegex(revision, r'^[0-9a-f]{40}$')
+            self.assertEqual(call, {
+                'uses': SOURCE + 'shared-remote-ci.yml@main',
+                'secrets': {'CI_BROKER_TOKEN': '${{ secrets.RENOVATE_POLICY_TOKEN }}',
+                            'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
+            })
+            self.remote_facade(workflow['jobs']['qase90'], 'qase90', dependency='qase90-check',
+                               name='Qase 90 cross-service')
+
         def test_required_facades_reject_every_non_success_result(self):
             _, jobs, kinds = self.context()
             for kind in kinds:
                 with self.subTest(gate=kind):
                     gate = jobs[kind]
-                    self.assertEqual(gate.get('name', kind), kind)
-                    self.assertEqual(gate['needs'], 'relay' if 'relay' in jobs else kind + '-check')
                     condition = "always() && github.event_name == 'pull_request'" if kind == 'migrations' else 'always()'
-                    self.assertEqual(gate['if'], condition)
                     if 'relay' in jobs:
-                        self.assertEqual(set(gate) - {'name'}, {
-                            'needs', 'if', 'permissions', 'runs-on', 'timeout-minutes', 'env', 'steps'})
-                        self.assertEqual(gate['permissions'], {})
-                        self.assertNotIn('secrets', gate)
-                        self.assertEqual(gate['env'], {
-                            'RELAY_RESULT': '${{ needs.relay.result }}',
-                            'ACCEPTED': '${{ needs.relay.outputs.accepted }}',
-                            'SOURCE_RUN_ATTEMPT': '${{ needs.relay.outputs.source_run_attempt }}',
-                            'EXPECTED_RUN_ATTEMPT': '${{ github.run_attempt }}',
-                            'RESULT': '${{ needs.relay.outputs.' + kind + ' }}',
-                        })
-                    else:
-                        self.assertEqual(gate['env']['RESULT'], '${{ needs.' + kind + '-check.result }}')
+                        self.remote_facade(gate, kind, condition=condition)
+                        continue
+                    self.assertEqual(gate.get('name', kind), kind)
+                    self.assertEqual(gate['needs'], kind + '-check')
+                    self.assertEqual(gate['if'], condition)
+                    self.assertEqual(gate['env']['RESULT'], '${{ needs.' + kind + '-check.result }}')
                     self.assertFalse(gate.get('continue-on-error', False))
                     self.assertEqual(gate['runs-on'], 'ubuntu-latest')
                     self.assertEqual(gate['timeout-minutes'], 2)
@@ -343,29 +399,6 @@ def suite(root, common):
                     step = gate['steps'][0]
                     self.assertNotIn('if', step)
                     self.assertFalse(step.get('continue-on-error', False))
-                    if 'relay' in jobs:
-                        self.assertEqual(set(step) - {'name'}, {'run'})
-                        self.assertEqual(step['run'].strip(), RELAY_RUN)
-                        # The real shell gate must reject failed/skipped relay, unaccepted
-                        # receipts, another source attempt, and each non-success result.
-                        accepted_env = {'RELAY_RESULT': 'success', 'ACCEPTED': 'true',
-                                        'SOURCE_RUN_ATTEMPT': '2', 'EXPECTED_RUN_ATTEMPT': '2',
-                                        'RESULT': 'success'}
-                        cases = [({}, True)]
-                        for key, values in {
-                            'RELAY_RESULT': ('failure', 'skipped', 'cancelled', ''),
-                            'ACCEPTED': ('false', '', 'True', 'success'),
-                            'SOURCE_RUN_ATTEMPT': ('1', '3', '', '02'),
-                            'RESULT': ('failure', 'skipped', 'cancelled', ''),
-                        }.items():
-                            cases.extend(({key: value}, False) for value in values)
-                        cases.append(({'SOURCE_RUN_ATTEMPT': '1', 'EXPECTED_RUN_ATTEMPT': '1'}, True))
-                        for changed, allowed in cases:
-                            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', step['run']],
-                                env={**os.environ, **accepted_env, **changed},
-                                capture_output=True, text=True, timeout=5)
-                            self.assertEqual(result.returncode == 0, allowed, changed)
-                        continue
                     self.assertEqual(step['run'], 'test "$RESULT" = success')
                     for outcome in ['success', 'failure', 'skipped', 'cancelled', '']:
                         result = subprocess.run(['bash', '-euo', 'pipefail', '-c', step['run']],

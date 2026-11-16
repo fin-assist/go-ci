@@ -2,6 +2,13 @@ name: Relay private service CI
 
 on:
   workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: service
+      qase90_revisions:
+        type: string
+        default: ''
     secrets:
       CI_BROKER_TOKEN:
         required: true
@@ -20,6 +27,8 @@ on:
         value: ${{ jobs.relay.outputs.image }}
       migrations:
         value: ${{ jobs.relay.outputs.migrations }}
+      qase90:
+        value: ${{ jobs.relay.outputs.qase90 }}
       broker_url:
         value: ${{ jobs.relay.outputs.broker_url }}
 
@@ -40,6 +49,7 @@ jobs:
       lint: ${{ steps.result.outputs.lint }}
       image: ${{ steps.result.outputs.image }}
       migrations: ${{ steps.result.outputs.migrations }}
+      qase90: ${{ steps.result.outputs.qase90 }}
       broker_url: ${{ steps.result.outputs.broker_url }}
     steps:
       # This job executes only the resolved shared source, never service or PR code.
@@ -54,6 +64,8 @@ jobs:
         id: result
         env:
           CI_BROKER_TOKEN: ${{ secrets.CI_BROKER_TOKEN }}
+          CI_BROKER_MODE: ${{ inputs.mode }}
+          QASE90_REVISIONS: ${{ inputs.qase90_revisions }}
           GO_CI_SHA: ${{ job.workflow_sha }}
           SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SOURCE_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}

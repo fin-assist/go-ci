@@ -99,22 +99,19 @@ class ProductionImageTests(unittest.TestCase):
         tag = {"created_at": old, "name": DIGEST, "metadata": {"container": {"tags": ["sha-" + SHA]}}}
         wrong_tag = tag | {"metadata": {"container": {"tags": ["sha-" + "e" * 40]}}}
         cases = [
-            ("legacy on later page", old, [[wrong_tag], [tag]], "", True, True, True),
-            ("current CI", cutoff, [[tag]], "", True, False, False),
-            ("new publication from earlier CI", old, [[tag | {"created_at": cutoff}]], "", True, False, True),
-            ("another tag", old, [[wrong_tag]], "", True, False, True),
-            ("package absent", old, [[]], "HTTP 404", True, False, True),
-            ("registry API denied", old, [[]], "HTTP 403", False, False, True),
-            ("duplicate tag", old, [[tag], [tag]], "", False, False, True),
-            ("malformed legacy digest", old, [[tag | {"name": "latest"}]], "", False, False, True),
-            ("malformed legacy date", old, [[tag | {"created_at": "invalid"}]], "", False, False, True),
+            ("legacy on later page", [[wrong_tag], [tag]], "", True, True),
+            ("tag created after the transition", [[tag | {"created_at": cutoff}]], "", True, False),
+            ("another tag", [[wrong_tag]], "", True, False),
+            ("package absent", [[]], "HTTP 404", True, False),
+            ("registry API denied", [[]], "HTTP 403", False, False),
+            ("duplicate tag", [[tag], [tag]], "", False, False),
+            ("malformed legacy digest", [[tag | {"name": "latest"}]], "", False, False),
+            ("malformed legacy date", [[tag | {"created_at": "invalid"}]], "", False, False),
         ]
-        for name, created, pages, api_error, accepted, retained, call in cases:
+        for name, pages, api_error, accepted, retained in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                event, fixture, output, summary, calls = [root / item for item in
-                                                            ("event", "pages", "output", "summary", "calls")]
-                event.write_text(json.dumps({"workflow_run": {"created_at": created}}))
+                fixture, output, summary, calls = [root / item for item in ("pages", "output", "summary", "calls")]
                 fixture.write_text(json.dumps(pages))
                 self.stub(root, "gh", """
 printf '%s\n' "$*" > "$CALLS"
@@ -126,17 +123,14 @@ cat "$FIXTURE"
 """)
                 env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "RUNNER_TEMP": directory,
                        "GITHUB_REPOSITORY": "fin-assist/analytics", "SOURCE_SHA": SHA,
-                       "GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output),
-                       "GITHUB_STEP_SUMMARY": str(summary), "FIXTURE": str(fixture),
+                       "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "FIXTURE": str(fixture),
                        "CALLS": str(calls), "API_ERROR": api_error}
                 result = subprocess.run(["bash", "-e", "-c", legacy["run"]], env=env,
                                         timeout=5, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
-                self.assertEqual(calls.exists(), call)
-                if call:
-                    self.assertEqual(calls.read_text(),
-                                     "api --paginate --slurp orgs/fin-assist/packages/container/analytics/versions"
-                                     "?state=active&per_page=100\n")
+                self.assertEqual(calls.read_text(),
+                                 "api --paginate --slurp orgs/fin-assist/packages/container/analytics/versions"
+                                 "?state=active&per_page=100\n")
                 self.assertEqual(output.exists(), retained)
                 self.assertEqual(summary.exists(), retained)
                 if retained:

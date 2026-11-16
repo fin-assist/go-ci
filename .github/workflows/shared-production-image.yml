@@ -86,10 +86,6 @@ jobs:
           # FIN-516: go-ci #65 enabled reproducible image builds.
           cutover=2026-11-15T15:42:22Z
           epoch=$(jq -en --arg cutoff "$cutover" '$cutoff | fromdateiso8601')
-          created=$(jq -er '.workflow_run.created_at | fromdateiso8601' "$GITHUB_EVENT_PATH")
-          if (( created >= epoch )); then
-            exit 0
-          fi
           service="${GITHUB_REPOSITORY#fin-assist/}"
           package="orgs/fin-assist/packages/container/$service"
           error="$RUNNER_TEMP/legacy-package-error"

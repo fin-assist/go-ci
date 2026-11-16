@@ -156,10 +156,22 @@ class InfraWorkflowContractTests(unittest.TestCase):
         import json
         root = consumer_root()
         baseline = json.loads((root / 'renovate-base.json').read_text())
-        self.assertEqual(baseline, {'extends': ['config:recommended']})
         config = json.loads((root / 'renovate.json').read_text())
-        # FIN-456 adds only active immutable source-pin managers and their single group;
-        # it must not replace infra's original recommended dependency policy.
+        expected_baseline = {'extends': ['config:recommended']}
+        if 'schedule' in config or 'packageRules' in baseline:
+            self.assertEqual(config.get('baseBranchPatterns'), ['main'])
+            self.assertEqual(config.get('schedule'), ['* 0-8 * * 1'])
+            self.assertEqual(config.get('timezone'), 'Europe/Moscow')
+            self.assertIs(config.get('updateNotScheduled'), False)
+            expected_baseline['packageRules'] = [{
+                'description': 'FIN-504: batch ordinary updates in the weekly window',
+                'matchPackageNames': ['*'],
+                'matchUpdateTypes': ['minor', 'patch', 'digest', 'pin', 'pinDigest'],
+                'groupName': 'weekly dependencies',
+                'groupSlug': 'weekly-dependencies',
+            }]
+        self.assertEqual(baseline, expected_baseline)
+        # FIN-456 keeps the source-pin updates in their own atomic group.
         self.assertEqual(len(config['customManagers']), 2)
         for manager in config['customManagers']:
             self.assertEqual(set(manager) - {'description'}, {
@@ -177,7 +189,6 @@ class InfraWorkflowContractTests(unittest.TestCase):
             'matchPackageNames': ['fin-assist/go-ci', 'fin-assist/go-ci/**'],
             'groupName': 'FinAssist shared Renovate controller',
             'groupSlug': 'finassist-shared-renovate', 'pinDigests': True}])
-        config = json.loads((root / 'renovate.json').read_text())
         self.assertEqual(config['extends'],
                          ['local>fin-assist/infra:base#renovate-policy',
                           'local>fin-assist/infra:policy#renovate-policy'])

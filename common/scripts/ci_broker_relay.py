@@ -36,6 +36,14 @@ class Rejected(ValueError):
     """A response or request cannot establish the required CI identity."""
 
 
+class Transient(Rejected):
+    """A failed read may be repeated within the existing operation deadline."""
+
+    def __init__(self, message, retry_after=0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def request_inputs(environ):
     fields = {
         "source_repository": "GITHUB_REPOSITORY",
@@ -89,10 +97,18 @@ class GitHub:
             raise Rejected("A GitHub API token is required")
         self.token = token
         self.opener = urllib.request.build_opener(self.NoRedirect())
+        self.clock = time.monotonic
+        self.deadline = None
 
     def request(self, path, body=None):
         if not path.startswith(f"/repos/{BROKER_REPOSITORY}/actions/"):
             raise Rejected("Unexpected API destination")
+        timeout = 30
+        if self.deadline is not None:
+            remaining = self.deadline - self.clock()
+            if remaining <= 0:
+                raise Rejected("Timed out waiting for the exact private CI run")
+            timeout = min(timeout, remaining)
         request = urllib.request.Request(
             "https://api.github.com" + path,
             data=None if body is None else json.dumps(body).encode(),
@@ -103,14 +119,19 @@ class GitHub:
             method="GET" if body is None else "POST",
         )
         try:
-            with self.opener.open(request, timeout=30) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 data = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             code = error.code
+            retry = error.headers.get("Retry-After", "") if error.headers else ""
+            remaining = error.headers.get("X-RateLimit-Remaining") if error.headers else None
+            retry_after = int(retry) if re.fullmatch(r"[0-9]{1,9}", retry) else 0
             error.close()
+            if code == 429 or 500 <= code < 600 or (code == 403 and (retry_after or remaining == "0")):
+                raise Transient(f"GitHub API returned HTTP {code}", retry_after) from None
             raise Rejected(f"GitHub API returned HTTP {code}") from None
         except (urllib.error.URLError, TimeoutError):
-            raise Rejected("GitHub API request failed") from None
+            raise Transient("GitHub API request failed") from None
         if len(data) > MAX_RESPONSE_BYTES:
             raise Rejected("GitHub API response is too large")
         if not data:
@@ -181,8 +202,11 @@ def gate_results(run, jobs, inputs):
     return results
 
 
-def relay(dispatch_api, read_api, inputs, *, clock=time.monotonic, sleep=time.sleep, now=None):
+def relay(api, inputs, *, clock=time.monotonic, sleep=time.sleep, now=None):
     started = clock()
+    deadline = started + TIMEOUT_SECONDS
+    api.clock = clock
+    api.deadline = deadline
     now = now or datetime.datetime.now(datetime.timezone.utc)
     # A small clock-skew margin does not weaken uniqueness: the source run/attempt is exact.
     earliest = (now - datetime.timedelta(minutes=5)).isoformat(timespec="seconds")
@@ -190,21 +214,28 @@ def relay(dispatch_api, read_api, inputs, *, clock=time.monotonic, sleep=time.sl
                                    "created": f">={earliest}"})
     workflow = f"/repos/{BROKER_REPOSITORY}/actions/workflows/{BROKER_WORKFLOW}"
     # Dispatch is deliberately not retried: a lost response must not launch duplicate CI.
-    dispatch_api.request(workflow + "/dispatches", {"ref": BROKER_REF, "inputs": inputs})
-    while clock() - started < TIMEOUT_SECONDS:
-        run = select_run(read_api.pages(workflow + "/runs?" + query, "workflow_runs"), inputs)
-        if run and run.get("status") == "completed":
-            jobs = read_api.pages(f"/repos/{BROKER_REPOSITORY}/actions/runs/{run['id']}/attempts/1/jobs", "jobs")
-            return gate_results(run, jobs, inputs)
-        sleep(POLL_SECONDS)
+    api.request(workflow + "/dispatches", {"ref": BROKER_REF, "inputs": inputs})
+    while clock() < deadline:
+        delay = POLL_SECONDS
+        try:
+            run = select_run(api.pages(workflow + "/runs?" + query, "workflow_runs"), inputs)
+            if run and run.get("status") == "completed":
+                jobs = api.pages(f"/repos/{BROKER_REPOSITORY}/actions/runs/{run['id']}/attempts/1/jobs", "jobs")
+                return gate_results(run, jobs, inputs)
+        except Transient as error:
+            # Only GET requests are inside this block. Identity/format failures
+            # remain terminal, and another dispatch is never issued.
+            delay = max(delay, error.retry_after)
+        remaining = deadline - clock()
+        if remaining > 0:
+            sleep(min(delay, remaining))
     raise Rejected("Timed out waiting for the exact private CI run")
 
 
 def main():
     try:
         inputs = request_inputs(os.environ)
-        result = relay(GitHub(os.environ.get("CI_BROKER_TOKEN", "")),
-                       GitHub(os.environ.get("CI_BROKER_READ_TOKEN", "")), inputs)
+        result = relay(GitHub(os.environ.get("CI_BROKER_TOKEN", "")), inputs)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
             for name, value in result.items():
                 output.write(f"{name}={value}\n")

@@ -1,12 +1,18 @@
 """Private CI relay admission, API identity and failure propagation scenarios."""
 
 import datetime
+from contextlib import redirect_stderr, redirect_stdout
+from email.message import Message
 import importlib.util
 import io
+import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.error
+import urllib.request
+import urllib.response
 
 import yaml
 
@@ -41,6 +47,26 @@ def completed_run(inputs):
 def completed_jobs():
     return [{"name": gate, "run_id": 999, "run_attempt": 1, "head_sha": BROKER_SHA,
              "status": "completed", "conclusion": "success"} for gate in relay.GATES]
+
+
+class MemoryHTTPS(urllib.request.BaseHandler):
+    """Feed a real urllib opener without making a network connection."""
+
+    handler_order = 0
+
+    def __init__(self, body=b"{}", status=200, headers=None):
+        self.body, self.status = body, status
+        self.headers = Message()
+        for name, value in (headers or {}).items():
+            self.headers[name] = value
+        self.requests = []
+
+    def https_open(self, request):
+        self.requests.append(request)
+        response = urllib.response.addinfourl(io.BytesIO(self.body), self.headers,
+                                             request.full_url, self.status)
+        response.msg = "fixture response"
+        return response
 
 
 class AdmissionTests(unittest.TestCase):
@@ -143,7 +169,7 @@ class ProtocolTests(unittest.TestCase):
         def sleep(seconds):
             ticks[0] += seconds
 
-        result = relay.relay(API(), API(), inputs, clock=lambda: ticks[0], sleep=sleep,
+        result = relay.relay(API(), inputs, clock=lambda: ticks[0], sleep=sleep,
                              now=datetime.datetime(2026, 11, 16, tzinfo=datetime.timezone.utc))
         self.assertEqual(result["accepted"], "true")
         self.assertEqual(result["source_run_attempt"], "2")
@@ -169,7 +195,7 @@ class ProtocolTests(unittest.TestCase):
             ticks[0] += seconds
 
         with patch.object(relay, "TIMEOUT_SECONDS", 30), self.assertRaisesRegex(relay.Rejected, "Timed out"):
-            relay.relay(API(), API(), inputs, clock=lambda: ticks[0], sleep=sleep)
+            relay.relay(API(), inputs, clock=lambda: ticks[0], sleep=sleep)
         self.assertEqual(len(dispatches), 1)
 
     def test_pagination_and_bounds(self):
@@ -199,7 +225,7 @@ class ProtocolTests(unittest.TestCase):
     def test_workflow_executes_only_resolved_shared_code_and_exports_all_gates(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-remote-ci.yml").read_text())
         job = workflow["jobs"]["relay"]
-        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertEqual(workflow["permissions"], {})
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", job["if"])
         checkout, execute = job["steps"]
         self.assertEqual(checkout["with"]["repository"], "fin-assist/go-ci")
@@ -207,11 +233,288 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(checkout["with"]["persist-credentials"])
         self.assertEqual(checkout["with"]["token"], "${{ secrets.GO_MODULES_TOKEN }}")
         self.assertEqual(execute["run"], "python3 -I common/scripts/ci_broker_relay.py")
-        self.assertEqual(execute["env"]["CI_BROKER_READ_TOKEN"], "${{ secrets.GO_MODULES_TOKEN }}")
+        self.assertNotIn("CI_BROKER_READ_TOKEN", execute["env"])
+        self.assertEqual(execute["env"]["CI_BROKER_TOKEN"], "${{ secrets.CI_BROKER_TOKEN }}")
         self.assertEqual(execute["env"]["GO_CI_SHA"], "${{ job.workflow_sha }}")
         self.assertEqual(set(workflow[True]["workflow_call"]["outputs"]),
                          {*relay.GATES, "accepted", "source_run_attempt", "broker_url"})
         self.assertFalse(any("upload-artifact" in step.get("uses", "") for step in job["steps"]))
+
+
+class HTTPAdapterTests(unittest.TestCase):
+    path = "/repos/fin-assist/infra/actions/runs"
+
+    def test_real_opener_rejects_302_without_following_location_or_leaking_body(self):
+        api = relay.GitHub("private-token-sentinel")
+        handler = MemoryHTTPS(b"private-response-sentinel", 302,
+                              {"Location": "https://outsider.example/collect"})
+        api.opener.add_handler(handler)
+        with patch("socket.create_connection", side_effect=AssertionError("network must not be used")):
+            with self.assertRaisesRegex(relay.Rejected, "^GitHub API returned HTTP 302$") as raised:
+                api.request(self.path)
+        self.assertEqual([request.full_url for request in handler.requests],
+                         ["https://api.github.com" + self.path])
+        self.assertNotIn("sentinel", str(raised.exception))
+
+    def test_response_byte_limit_reads_only_one_extra_byte_and_accepts_exact_limit(self):
+        class Response(io.BytesIO):
+            def __init__(self, payload):
+                super().__init__(payload)
+                self.read_sizes = []
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return super().read(size)
+
+        api = relay.GitHub("fixture-token")
+        exact = b'{"ok":true}'.ljust(32, b" ")
+        for payload, accepted in ((exact, True), (exact + b" ", False)):
+            with self.subTest(size=len(payload)):
+                response = Response(payload)
+                with patch.object(relay, "MAX_RESPONSE_BYTES", 32), \
+                     patch.object(api.opener, "open", return_value=response):
+                    if accepted:
+                        self.assertEqual(api.request(self.path), {"ok": True})
+                    else:
+                        with self.assertRaisesRegex(relay.Rejected, "^GitHub API response is too large$"):
+                            api.request(self.path)
+                self.assertEqual(response.read_sizes, [33])
+                self.assertTrue(response.closed)
+
+    def test_invalid_json_utf8_and_nonobject_payloads_fail_without_echoing_content(self):
+        for payload, message in ((b'{"private-response-sentinel":', "invalid JSON"),
+                                 (b"\xff", "invalid JSON"),
+                                 (b'["private-response-sentinel"]', "an unexpected object"),
+                                 (b'"private-response-sentinel"', "an unexpected object"),
+                                 (b"null", "an unexpected object"), (b"true", "an unexpected object"),
+                                 (b"123", "an unexpected object")):
+            with self.subTest(payload=payload):
+                api = relay.GitHub("fixture-token")
+                api.opener.add_handler(MemoryHTTPS(payload))
+                with self.assertRaisesRegex(relay.Rejected, "^GitHub API returned " + message + "$") as raised:
+                    api.request(self.path)
+                self.assertNotIn("sentinel", str(raised.exception))
+
+    def test_empty_204_dispatch_preserves_post_identity_and_has_no_json_result(self):
+        api = relay.GitHub("private-token-sentinel")
+        handler = MemoryHTTPS(b"", 204)
+        api.opener.add_handler(handler)
+        inputs = relay.request_inputs(environment())
+        body = {"ref": "main", "inputs": inputs}
+        path = "/repos/fin-assist/infra/actions/workflows/service-ci.yml/dispatches"
+        self.assertIsNone(api.request(path, body))
+        self.assertEqual(len(handler.requests), 1)
+        request = handler.requests[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.full_url, "https://api.github.com" + path)
+        self.assertEqual(json.loads(request.data), body)
+        self.assertEqual(request.get_header("Authorization"), "Bearer private-token-sentinel")
+
+    def test_network_errors_are_transient_and_redact_the_underlying_exception(self):
+        for error in (urllib.error.URLError("private-network-sentinel"),
+                      TimeoutError("private-timeout-sentinel")):
+            with self.subTest(error=type(error).__name__):
+                api = relay.GitHub("private-token-sentinel")
+                with patch.object(api.opener, "open", side_effect=error) as opened:
+                    with self.assertRaisesRegex(relay.Transient, "^GitHub API request failed$") as raised:
+                        api.request(self.path)
+                self.assertEqual(opened.call_count, 1)
+                self.assertNotIn("sentinel", str(raised.exception))
+                self.assertIsInstance(raised.exception, relay.Rejected)
+
+    def test_only_rate_limited_403_and_retryable_http_statuses_are_transient(self):
+        cases = ((429, {}, True), (500, {}, True), (503, {}, True),
+                 (403, {"Retry-After": "2"}, True), (403, {"X-RateLimit-Remaining": "0"}, True),
+                 (403, {}, False), (403, {"X-RateLimit-Remaining": "10"}, False),
+                 (401, {}, False), (404, {}, False))
+        for status, headers, transient in cases:
+            with self.subTest(status=status, headers=headers):
+                api = relay.GitHub("fixture-token")
+                error = urllib.error.HTTPError("https://api.github.com", status, "private-http-sentinel",
+                                               headers, io.BytesIO(b"private-body-sentinel"))
+                with patch.object(api.opener, "open", side_effect=error):
+                    with self.assertRaises(relay.Rejected) as raised:
+                        api.request(self.path)
+                self.assertEqual(isinstance(raised.exception, relay.Transient), transient)
+                self.assertNotIn("sentinel", str(raised.exception))
+                if "Retry-After" in headers:
+                    self.assertGreaterEqual(raised.exception.retry_after, 2)
+                self.assertTrue(error.fp.closed)
+
+    def test_each_page_uses_remaining_deadline_and_expiry_stops_before_another_request(self):
+        for expired in (False, True):
+            with self.subTest(expired=expired):
+                ticks = [10]
+                api = relay.GitHub("fixture-token")
+                api.clock = lambda: ticks[0]
+                api.deadline = 14.5
+                responses = iter(({"jobs": [{"id": index} for index in range(100)]}, {"jobs": []}))
+
+                def opened(request, *, timeout):
+                    ticks[0] += 5 if expired else 3
+                    return io.BytesIO(json.dumps(next(responses)).encode())
+
+                with patch.object(api.opener, "open", side_effect=opened) as opening:
+                    if expired:
+                        with self.assertRaisesRegex(relay.Rejected, "Timed out"):
+                            api.pages(self.path + "/999/attempts/1/jobs", "jobs")
+                    else:
+                        self.assertEqual(len(api.pages(self.path + "/999/attempts/1/jobs", "jobs")), 100)
+                self.assertEqual([call.kwargs["timeout"] for call in opening.call_args_list],
+                                 [4.5] if expired else [4.5, 1.5])
+                self.assertEqual([call.args[0].full_url.rsplit("page=", 1)[1]
+                                  for call in opening.call_args_list], ["1"] if expired else ["1", "2"])
+
+
+class RetryTests(unittest.TestCase):
+    def test_relay_installs_one_deadline_covering_dispatch_discovery_and_jobs(self):
+        inputs, ticks = relay.request_inputs(environment()), [100]
+        api = relay.GitHub("fixture-token")
+        clock = lambda: ticks[0]
+        responses = iter((None, {"workflow_runs": [completed_run(inputs)]}, {"jobs": completed_jobs()}))
+
+        def opened(request, *, timeout):
+            ticks[0] += 5
+            response = next(responses)
+            return io.BytesIO(b"" if response is None else json.dumps(response).encode())
+
+        with patch.object(relay, "TIMEOUT_SECONDS", 25), \
+             patch.object(api.opener, "open", side_effect=opened) as opening:
+            result = relay.relay(api, inputs, clock=clock)
+        self.assertEqual(result["accepted"], "true")
+        self.assertIs(api.clock, clock)
+        self.assertEqual(api.deadline, 125)
+        self.assertEqual([call.kwargs["timeout"] for call in opening.call_args_list], [25, 20, 15])
+        self.assertEqual([call.args[0].get_method() for call in opening.call_args_list], ["POST", "GET", "GET"])
+
+    def test_transient_get_failures_retry_both_discovery_and_exact_attempt_jobs(self):
+        inputs, ticks = relay.request_inputs(environment()), [0]
+        dispatches, reads, failures = [], [], {"workflow_runs", "jobs"}
+
+        class API:
+            def request(self, path, body=None):
+                dispatches.append((path, body))
+
+            def pages(self, path, key):
+                reads.append((path, key))
+                if key in failures:
+                    failures.remove(key)
+                    raise relay.Transient("temporary API failure", retry_after=3)
+                return [completed_run(inputs)] if key == "workflow_runs" else completed_jobs()
+
+        def sleep(seconds):
+            ticks[0] += seconds
+
+        result = relay.relay(API(), inputs, clock=lambda: ticks[0], sleep=sleep)
+        self.assertEqual(result["accepted"], "true")
+        self.assertEqual(len(dispatches), 1)
+        self.assertFalse(failures)
+        self.assertGreaterEqual(ticks[0], 6)
+        self.assertEqual(sum(key == "jobs" for _, key in reads), 2)
+        self.assertTrue(all(path.endswith("/999/attempts/1/jobs") for path, key in reads if key == "jobs"))
+
+    def test_ambiguous_dispatch_failure_is_never_retried_or_followed_by_get(self):
+        dispatches, reads = [], []
+
+        class API:
+            def request(self, path, body=None):
+                dispatches.append((path, body))
+                raise relay.Transient("GitHub API request failed")
+
+            def pages(self, path, key):
+                reads.append((path, key))
+                return []
+
+        with self.assertRaises(relay.Transient), patch.object(relay.time, "sleep") as sleep:
+            relay.relay(API(), relay.request_inputs(environment()), sleep=sleep)
+        self.assertEqual(len(dispatches), 1)
+        self.assertEqual(reads, [])
+        sleep.assert_not_called()
+
+    def test_permanent_get_rejection_is_not_retried(self):
+        reads = []
+
+        class API:
+            def request(self, path, body=None):
+                return None
+
+            def pages(self, path, key):
+                reads.append(path)
+                raise relay.Rejected("GitHub API returned invalid JSON")
+
+        with patch.object(relay.time, "sleep") as sleep:
+            with self.assertRaisesRegex(relay.Rejected, "^GitHub API returned invalid JSON$"):
+                relay.relay(API(), relay.request_inputs(environment()), sleep=sleep)
+        self.assertEqual(len(reads), 1)
+        sleep.assert_not_called()
+
+    def test_retry_after_cannot_extend_the_overall_deadline(self):
+        ticks, reads, dispatches, sleeps = [0], [], [], []
+
+        class API:
+            def request(self, path, body=None):
+                dispatches.append(body)
+
+            def pages(self, path, key):
+                reads.append(ticks[0])
+                raise relay.Transient("rate limited", retry_after=600)
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            ticks[0] += seconds
+
+        with patch.object(relay, "TIMEOUT_SECONDS", 30), self.assertRaisesRegex(relay.Rejected, "Timed out"):
+            relay.relay(API(), relay.request_inputs(environment()),
+                        clock=lambda: ticks[0], sleep=sleep)
+        self.assertEqual(len(dispatches), 1)
+        self.assertEqual(reads, [0])
+        self.assertEqual(sleeps, [30])
+
+
+class MainTests(unittest.TestCase):
+    def test_main_appends_exact_outputs_and_summary_without_credentials(self):
+        inputs = relay.request_inputs(environment())
+        result = relay.gate_results(completed_run(inputs), completed_jobs(), inputs)
+        with tempfile.TemporaryDirectory() as tmp:
+            output, summary = Path(tmp) / "output", Path(tmp) / "summary"
+            output.write_text("existing=output\n")
+            summary.write_text("Existing summary\n")
+            env = environment() | {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
+                                   "CI_BROKER_TOKEN": "private-dispatch-sentinel"}
+            with patch.dict(relay.os.environ, env, clear=True), \
+                 patch.object(relay, "GitHub") as api, patch.object(relay, "relay", return_value=result) as invoke:
+                relay.main()
+            self.assertEqual([call.args for call in api.call_args_list],
+                             [("private-dispatch-sentinel",)])
+            self.assertEqual(invoke.call_args.args[1], inputs)
+            self.assertEqual(output.read_text(), "existing=output\n"
+                             "go=success\nlint=success\nimage=success\nmigrations=success\n"
+                             "accepted=true\nsource_run_attempt=2\nbroker_run_id=999\n"
+                             "broker_url=https://github.com/fin-assist/infra/actions/runs/999\n")
+            self.assertEqual(summary.read_text(), "Existing summary\n"
+                             "Private CI: [999](https://github.com/fin-assist/infra/actions/runs/999)\n\n"
+                             f"Go CI source: `{SOURCE}`\n\n"
+                             "go: success | lint: success | image: success | migrations: success\n")
+            self.assertNotIn("sentinel", output.read_text() + summary.read_text())
+
+    def test_main_rejects_with_redacted_system_exit_and_no_partial_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output, summary = Path(tmp) / "output", Path(tmp) / "summary"
+            env = environment() | {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
+                                   "CI_BROKER_TOKEN": "private-dispatch-sentinel"}
+            error = urllib.error.HTTPError("https://api.github.com/private-url-sentinel", 403,
+                                           "private-error-sentinel", {}, io.BytesIO(b"private-body-sentinel"))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.dict(relay.os.environ, env, clear=True), \
+                 patch.object(urllib.request.OpenerDirector, "open", side_effect=error) as opened, \
+                 redirect_stdout(stdout), redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    relay.main()
+            self.assertEqual(raised.exception.code, "GitHub API returned HTTP 403")
+            self.assertEqual(opened.call_count, 1)
+            self.assertEqual(stdout.getvalue() + stderr.getvalue(), "")
+            self.assertFalse(output.exists())
+            self.assertFalse(summary.exists())
 
 
 if __name__ == "__main__":

@@ -119,7 +119,7 @@ class ConsumerContractTests(unittest.TestCase):
         for mutation in ('source-pin', 'source-path', 'revision', 'library', 'production-service',
                          'unknown-service', 'fork', 'push-branch', 'secrets-inherit', 'wrong-token',
                          'missing-reader', 'checkout', 'caller-input', 'trigger', 'name', 'permissions',
-                         'workflow-shell'):
+                         'workflow-shell', 'workflow-env'):
             with self.subTest(mutation=mutation):
                 doc = self.relay_fixture()
                 relay = doc['jobs']['relay']
@@ -143,6 +143,7 @@ class ConsumerContractTests(unittest.TestCase):
                 elif mutation == 'name': doc['name'] = 'Private CI'
                 elif mutation == 'permissions': doc['permissions']['contents'] = 'write'
                 elif mutation == 'workflow-shell': doc['defaults'] = {'run': {'shell': 'echo {0}'}}
+                elif mutation == 'workflow-env': doc['env'] = {'BASH_ENV': '/tmp/bypass.sh'}
                 self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_private_relay_rejects_source_artifact_producers_and_production_publishers(self):
@@ -151,7 +152,13 @@ class ConsumerContractTests(unittest.TestCase):
             ('production-image.yml', 'name: obsolete\n'),
             ('renamed-producer.yaml', 'uses: fin-assist/go-ci/.github/workflows/shared-private-inputs.yml@main\n'),
             ('renamed-publisher.yml', 'uses: fin-assist/go-ci/.github/workflows/shared-production-image.yml@main\n'),
+            ('renamed-image.yml', 'jobs: {image: {uses: "fin-assist/go-ci/.github/workflows/shared-image.yml@main"}}\n'),
+            ('renamed-go.yml', 'jobs:\n  go:\n    uses: fin-assist/go-ci/.github/workflows/shared-go.yml@main\n'),
+            ('future-producer.yml', 'uses: fin-assist/go-ci/.github/workflows/shared-new-producer.yml@main\n'),
+            ('mixed-case-producer.yml', 'uses: Fin-Assist/Go-Ci/.github/workflows/shared-image.yml@main\n'),
             ('upload.yml', 'uses: actions/upload-artifact@' + PIN + '\n'),
+            ('merge.yml', 'jobs: {merge: {steps: [{uses: "actions/upload-artifact/merge@' + PIN + '"}]}}\n'),
+            ('mixed-case-upload.yml', 'uses: Actions/Upload-Artifact/merge@' + PIN + '\n'),
         ):
             with self.subTest(filename=filename):
                 doc = self.relay_fixture()
@@ -164,7 +171,8 @@ class ConsumerContractTests(unittest.TestCase):
         for kind in ('go', 'lint', 'image', 'migrations'):
             for mutation in ('name', 'needs', 'condition', 'accepted', 'relay-result', 'attempt',
                              'expected-attempt', 'wrong-result', 'permissions', 'secret', 'step-condition',
-                             'continue', 'job-continue', 'shell', 'omit-accepted', 'omit-attempt', 'extra-step'):
+                             'continue', 'job-continue', 'shell', 'omit-accepted', 'omit-attempt', 'extra-step',
+                             'job-defaults', 'job-container', 'extra-env', 'step-env', 'working-directory'):
                 with self.subTest(kind=kind, mutation=mutation):
                     doc = self.relay_fixture()
                     gate = doc['jobs'][kind]
@@ -183,6 +191,11 @@ class ConsumerContractTests(unittest.TestCase):
                     elif mutation == 'continue': step['continue-on-error'] = True
                     elif mutation == 'job-continue': gate['continue-on-error'] = True
                     elif mutation == 'shell': step['shell'] = 'echo {0}'
+                    elif mutation == 'job-defaults': gate['defaults'] = {'run': {'shell': 'echo {0}'}}
+                    elif mutation == 'job-container': gate['container'] = {'image': 'example/bypass:latest'}
+                    elif mutation == 'extra-env': gate['env']['BASH_ENV'] = '/tmp/bypass.sh'
+                    elif mutation == 'step-env': step['env'] = {'RESULT': 'success', 'BASH_ENV': '/tmp/bypass.sh'}
+                    elif mutation == 'working-directory': step['working-directory'] = '/tmp/bypass'
                     elif mutation == 'omit-accepted': step['run'] = step['run'].replace('test "$ACCEPTED" = true\n', '')
                     elif mutation == 'omit-attempt': step['run'] = step['run'].replace('test "$SOURCE_RUN_ATTEMPT" = "$EXPECTED_RUN_ATTEMPT"\n', '')
                     elif mutation == 'extra-step': gate['steps'].append({'run': 'true'})

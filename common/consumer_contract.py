@@ -181,11 +181,23 @@ def suite(root, common):
                     },
                 })
                 # A second source-side artifact producer defeats private broker storage.
+                allowed_workflows = {
+                    SOURCE + 'shared-remote-ci.yml@main', SOURCE + 'shared-release.yml@main',
+                }
                 for path in (root / '.github/workflows').glob('*.y*ml'):
-                    text = path.read_text()
-                    self.assertNotIn('shared-private-inputs.yml@', text, str(path))
-                    self.assertNotIn('shared-production-image.yml@', text, str(path))
-                    self.assertNotIn('actions/upload-artifact@', text, str(path))
+                    pending = [yaml.safe_load(path.read_text())]
+                    while pending:
+                        item = pending.pop()
+                        if isinstance(item, dict):
+                            if 'uses' in item:
+                                reference = item['uses']
+                                self.assertIsInstance(reference, str, str(path))
+                                if reference.lower().startswith(SOURCE):
+                                    self.assertIn(reference, allowed_workflows, str(path))
+                                self.assertFalse(reference.lower().startswith('actions/upload-artifact'), str(path))
+                            pending.extend(item.values())
+                        elif isinstance(item, list):
+                            pending.extend(item)
                 return manifest, workflow['jobs'], kinds
             self.assertEqual(workflow['permissions'], {'actions': 'read', 'contents': 'read'})
             self.assertEqual(set(workflow['jobs']), kinds | {kind + '-check' for kind in kinds} | {'private-inputs'})

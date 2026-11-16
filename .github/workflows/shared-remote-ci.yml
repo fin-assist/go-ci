@@ -23,8 +23,7 @@ on:
       broker_url:
         value: ${{ jobs.relay.outputs.broker_url }}
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   relay:
@@ -55,7 +54,6 @@ jobs:
         id: result
         env:
           CI_BROKER_TOKEN: ${{ secrets.CI_BROKER_TOKEN }}
-          CI_BROKER_READ_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           GO_CI_SHA: ${{ job.workflow_sha }}
           SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SOURCE_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}

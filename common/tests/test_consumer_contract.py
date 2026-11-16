@@ -77,6 +77,130 @@ class ConsumerContractTests(unittest.TestCase):
         stream = io.StringIO()
         return unittest.TextTestRunner(stream=stream).run(CONTRACT.suite(self.root, COMMON))
 
+    def relay_fixture(self):
+        self.fixture(module='github.com/fin-assist/go-service-template')
+        self.quality_make()
+        (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'service'}))
+        (self.root / '.github/workflows/private-ci-inputs.yml').unlink()
+        release = self.root / '.github/workflows/release.yml'
+        release.write_text(release.read_text().replace('@' + PIN, '@main').replace('      revision: ' + PIN + '\n', ''))
+        jobs = {'relay': {
+            'if': "(github.event_name == 'pull_request' && "
+                  "github.event.pull_request.head.repo.full_name == github.repository) || "
+                  "(github.event_name == 'push' && github.ref == 'refs/heads/main')",
+            'uses': 'fin-assist/go-ci/.github/workflows/shared-remote-ci.yml@main',
+            'secrets': {'CI_BROKER_TOKEN': '${{ secrets.RENOVATE_POLICY_TOKEN }}',
+                        'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
+        }}
+        for kind in ('go', 'lint', 'image', 'migrations'):
+            jobs[kind] = {
+                'needs': 'relay',
+                'if': "always() && github.event_name == 'pull_request'" if kind == 'migrations' else 'always()',
+                'permissions': {}, 'runs-on': 'ubuntu-latest', 'timeout-minutes': 2,
+                'env': {'RELAY_RESULT': '${{ needs.relay.result }}',
+                        'ACCEPTED': '${{ needs.relay.outputs.accepted }}',
+                        'SOURCE_RUN_ATTEMPT': '${{ needs.relay.outputs.source_run_attempt }}',
+                        'EXPECTED_RUN_ATTEMPT': '${{ github.run_attempt }}',
+                        'RESULT': '${{ needs.relay.outputs.' + kind + ' }}'},
+                'steps': [{'run': 'test "$RELAY_RESULT" = success\n'
+                          'test "$ACCEPTED" = true\n'
+                          'test "$SOURCE_RUN_ATTEMPT" = "$EXPECTED_RUN_ATTEMPT"\n'
+                          'test "$RESULT" = success\n'}],
+            }
+        return {'name': 'CI', 'on': {'pull_request': None, 'push': {'branches': ['main']}},
+                'permissions': {'contents': 'read'}, 'jobs': jobs}
+
+    def test_private_relay_accepts_template_and_executes_fail_closed_facades(self):
+        result = self.result(self.relay_fixture())
+        self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+        self.assertEqual(result.testsRun, 3)
+
+    def test_private_relay_requires_trusted_source_and_exact_secret_boundary(self):
+        for mutation in ('source-pin', 'source-path', 'revision', 'library', 'production-service',
+                         'unknown-service', 'fork', 'push-branch', 'secrets-inherit', 'wrong-token',
+                         'missing-reader', 'checkout', 'caller-input', 'trigger', 'name', 'permissions',
+                         'workflow-shell', 'workflow-env'):
+            with self.subTest(mutation=mutation):
+                doc = self.relay_fixture()
+                relay = doc['jobs']['relay']
+                if mutation == 'source-pin': relay['uses'] = relay['uses'].replace('@main', '@' + PIN)
+                elif mutation == 'source-path': relay['uses'] = relay['uses'].replace('shared-remote-ci', 'shared-go')
+                elif mutation == 'revision':
+                    (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'service', 'revision': PIN}))
+                elif mutation == 'library':
+                    (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'library'}))
+                elif mutation in ('production-service', 'unknown-service'):
+                    (self.root / 'go.mod').write_text('module ' + (
+                        'github.com/fin-assist/user' if mutation == 'production-service' else 'example.com/fork') + '\n')
+                elif mutation == 'fork': relay['if'] = "github.event_name == 'pull_request'"
+                elif mutation == 'push-branch': relay['if'] = relay['if'].replace(" && github.ref == 'refs/heads/main'", '')
+                elif mutation == 'secrets-inherit': relay['secrets'] = 'inherit'
+                elif mutation == 'wrong-token': relay['secrets']['CI_BROKER_TOKEN'] = '${{ secrets.GO_MODULES_TOKEN }}'
+                elif mutation == 'missing-reader': del relay['secrets']['GO_MODULES_TOKEN']
+                elif mutation == 'checkout': relay['steps'] = [{'uses': 'actions/checkout@v7'}]
+                elif mutation == 'caller-input': relay['with'] = {'repository': 'example/fork'}
+                elif mutation == 'trigger': doc['on']['pull_request_target'] = doc['on'].pop('pull_request')
+                elif mutation == 'name': doc['name'] = 'Private CI'
+                elif mutation == 'permissions': doc['permissions']['contents'] = 'write'
+                elif mutation == 'workflow-shell': doc['defaults'] = {'run': {'shell': 'echo {0}'}}
+                elif mutation == 'workflow-env': doc['env'] = {'BASH_ENV': '/tmp/bypass.sh'}
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_private_relay_rejects_source_artifact_producers_and_production_publishers(self):
+        for filename, content in (
+            ('private-ci-inputs.yml', 'name: obsolete\n'),
+            ('production-image.yml', 'name: obsolete\n'),
+            ('renamed-producer.yaml', 'uses: fin-assist/go-ci/.github/workflows/shared-private-inputs.yml@main\n'),
+            ('renamed-publisher.yml', 'uses: fin-assist/go-ci/.github/workflows/shared-production-image.yml@main\n'),
+            ('renamed-image.yml', 'jobs: {image: {uses: "fin-assist/go-ci/.github/workflows/shared-image.yml@main"}}\n'),
+            ('renamed-go.yml', 'jobs:\n  go:\n    uses: fin-assist/go-ci/.github/workflows/shared-go.yml@main\n'),
+            ('future-producer.yml', 'uses: fin-assist/go-ci/.github/workflows/shared-new-producer.yml@main\n'),
+            ('mixed-case-producer.yml', 'uses: Fin-Assist/Go-Ci/.github/workflows/shared-image.yml@main\n'),
+            ('upload.yml', 'uses: actions/upload-artifact@' + PIN + '\n'),
+            ('merge.yml', 'jobs: {merge: {steps: [{uses: "actions/upload-artifact/merge@' + PIN + '"}]}}\n'),
+            ('mixed-case-upload.yml', 'uses: Actions/Upload-Artifact/merge@' + PIN + '\n'),
+        ):
+            with self.subTest(filename=filename):
+                doc = self.relay_fixture()
+                path = self.root / '.github/workflows' / filename
+                path.write_text(content)
+                self.assertFalse(self.result(doc).wasSuccessful())
+                path.unlink()
+
+    def test_private_relay_rejects_facade_attempt_and_result_bypasses(self):
+        for kind in ('go', 'lint', 'image', 'migrations'):
+            for mutation in ('name', 'needs', 'condition', 'accepted', 'relay-result', 'attempt',
+                             'expected-attempt', 'wrong-result', 'permissions', 'secret', 'step-condition',
+                             'continue', 'job-continue', 'shell', 'omit-accepted', 'omit-attempt', 'extra-step',
+                             'job-defaults', 'job-container', 'extra-env', 'step-env', 'working-directory'):
+                with self.subTest(kind=kind, mutation=mutation):
+                    doc = self.relay_fixture()
+                    gate = doc['jobs'][kind]
+                    step = gate['steps'][0]
+                    if mutation == 'name': gate['name'] = 'another required check'
+                    elif mutation == 'needs': gate['needs'] = []
+                    elif mutation == 'condition': gate['if'] = 'success()'
+                    elif mutation == 'accepted': gate['env']['ACCEPTED'] = 'true'
+                    elif mutation == 'relay-result': gate['env']['RELAY_RESULT'] = 'success'
+                    elif mutation == 'attempt': gate['env']['SOURCE_RUN_ATTEMPT'] = '${{ github.run_attempt }}'
+                    elif mutation == 'expected-attempt': gate['env']['EXPECTED_RUN_ATTEMPT'] = '${{ needs.relay.outputs.source_run_attempt }}'
+                    elif mutation == 'wrong-result': gate['env']['RESULT'] = '${{ needs.relay.outputs.accepted }}'
+                    elif mutation == 'permissions': gate['permissions'] = {'contents': 'read'}
+                    elif mutation == 'secret': gate['secrets'] = 'inherit'
+                    elif mutation == 'step-condition': step['if'] = 'false'
+                    elif mutation == 'continue': step['continue-on-error'] = True
+                    elif mutation == 'job-continue': gate['continue-on-error'] = True
+                    elif mutation == 'shell': step['shell'] = 'echo {0}'
+                    elif mutation == 'job-defaults': gate['defaults'] = {'run': {'shell': 'echo {0}'}}
+                    elif mutation == 'job-container': gate['container'] = {'image': 'example/bypass:latest'}
+                    elif mutation == 'extra-env': gate['env']['BASH_ENV'] = '/tmp/bypass.sh'
+                    elif mutation == 'step-env': step['env'] = {'RESULT': 'success', 'BASH_ENV': '/tmp/bypass.sh'}
+                    elif mutation == 'working-directory': step['working-directory'] = '/tmp/bypass'
+                    elif mutation == 'omit-accepted': step['run'] = step['run'].replace('test "$ACCEPTED" = true\n', '')
+                    elif mutation == 'omit-attempt': step['run'] = step['run'].replace('test "$SOURCE_RUN_ATTEMPT" = "$EXPECTED_RUN_ATTEMPT"\n', '')
+                    elif mutation == 'extra-step': gate['steps'].append({'run': 'true'})
+                    self.assertFalse(self.result(doc).wasSuccessful())
+
     def test_service_library_template_and_exact_bff_profiles_pass(self):
         for profile, module in [('service', 'github.com/fin-assist/user'),
                                 ('library', 'github.com/fin-assist/go-library-template'),

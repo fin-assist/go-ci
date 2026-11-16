@@ -87,6 +87,62 @@ class ProductionImageTests(unittest.TestCase):
                 else:
                     self.assertFalse(output.exists())
 
+    def test_legacy_rerun_checks_the_exact_published_tag_and_creates_no_new_receipt(self):
+        steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]
+        index = next(i for i, step in enumerate(steps) if step.get("id") == "legacy")
+        legacy = steps[index]
+        self.assertEqual(legacy["if"], "steps.source.outputs.attempt != '1'")
+        self.assertEqual(steps[index - 1]["name"], "Check the caller and existing package are private")
+        self.assertTrue(all(step["if"] == "steps.legacy.outputs.retained != 'true'" for step in steps[index + 1:]))
+        old = "2026-11-15T15:42:21Z"
+        cutoff = "2026-11-15T15:42:22Z"
+        tag = {"created_at": old, "name": DIGEST, "metadata": {"container": {"tags": ["sha-" + SHA]}}}
+        wrong_tag = tag | {"metadata": {"container": {"tags": ["sha-" + "e" * 40]}}}
+        cases = [
+            ("legacy on later page", old, [[wrong_tag], [tag]], "", True, True, True),
+            ("current CI", cutoff, [[tag]], "", True, False, False),
+            ("new publication from earlier CI", old, [[tag | {"created_at": cutoff}]], "", True, False, True),
+            ("another tag", old, [[wrong_tag]], "", True, False, True),
+            ("package absent", old, [[]], "HTTP 404", True, False, True),
+            ("registry API denied", old, [[]], "HTTP 403", False, False, True),
+            ("duplicate tag", old, [[tag], [tag]], "", False, False, True),
+            ("malformed legacy digest", old, [[tag | {"name": "latest"}]], "", False, False, True),
+            ("malformed legacy date", old, [[tag | {"created_at": "invalid"}]], "", False, False, True),
+        ]
+        for name, created, pages, api_error, accepted, retained, call in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                event, fixture, output, summary, calls = [root / item for item in
+                                                            ("event", "pages", "output", "summary", "calls")]
+                event.write_text(json.dumps({"workflow_run": {"created_at": created}}))
+                fixture.write_text(json.dumps(pages))
+                self.stub(root, "gh", """
+printf '%s\n' "$*" > "$CALLS"
+if [[ -n "$API_ERROR" ]]; then
+    printf '%s\n' "$API_ERROR" >&2
+    exit 1
+fi
+cat "$FIXTURE"
+""")
+                env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "RUNNER_TEMP": directory,
+                       "GITHUB_REPOSITORY": "fin-assist/analytics", "SOURCE_SHA": SHA,
+                       "GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output),
+                       "GITHUB_STEP_SUMMARY": str(summary), "FIXTURE": str(fixture),
+                       "CALLS": str(calls), "API_ERROR": api_error}
+                result = subprocess.run(["bash", "-e", "-c", legacy["run"]], env=env,
+                                        timeout=5, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual(calls.exists(), call)
+                if call:
+                    self.assertEqual(calls.read_text(),
+                                     "api --paginate --slurp orgs/fin-assist/packages/container/analytics/versions"
+                                     "?state=active&per_page=100\n")
+                self.assertEqual(output.exists(), retained)
+                self.assertEqual(summary.exists(), retained)
+                if retained:
+                    self.assertEqual(output.read_text(), "retained=true\n")
+                    self.assertIn(f"ghcr.io/fin-assist/analytics@{DIGEST}", summary.read_text())
+
     def test_scan_refuses_vulnerable_image_or_scanner_failure(self):
         steps = workflow("shared-production-image.yml")["jobs"]["publish"]["steps"]
         scan = next(step["run"] for step in steps if step.get("name") == "Scan image and generate SBOM")

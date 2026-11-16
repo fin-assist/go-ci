@@ -100,7 +100,46 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(inputs, {"source_repository": "fin-assist/go-service-template",
                                  "source_run_id": "123", "source_run_attempt": "2", "source_sha": SHA,
                                  "source_head_sha": HEAD, "source_base_sha": BASE,
-                                 "source_pr_number": "42", "go_ci_sha": SOURCE})
+                                 "source_pr_number": "42", "go_ci_sha": SOURCE,
+                                 "mode": "service", "qase90_revisions": ""})
+
+    def test_all_six_services_keep_exact_identity_and_bff_skips_only_migrations(self):
+        for name in ('go-service-template', 'assistant', 'user', 'analytics', 'bank-bff', 'bank-statement-data'):
+            repository = 'fin-assist/' + name
+            with self.subTest(repository=repository):
+                inputs = relay.request_inputs(environment() | {'GITHUB_REPOSITORY': repository,
+                    'SOURCE_HEAD_REPOSITORY': repository})
+                jobs = completed_jobs()
+                if name == 'bank-bff': jobs[-1]['conclusion'] = 'skipped'
+                self.assertEqual(relay.gate_results(completed_run(inputs), jobs, inputs)['accepted'], 'true')
+                jobs[-1]['conclusion'] = 'success' if name == 'bank-bff' else 'skipped'
+                self.assertEqual(relay.gate_results(completed_run(inputs), jobs, inputs)['accepted'], 'false')
+
+    def test_qase_mode_is_bff_only_with_two_bounded_immutable_revisions(self):
+        env = environment() | {'GITHUB_REPOSITORY': 'fin-assist/bank-bff',
+            'SOURCE_HEAD_REPOSITORY': 'fin-assist/bank-bff', 'CI_BROKER_MODE': 'qase90',
+            'QASE90_REVISIONS': json.dumps({'bsd': HEAD, 'analytics': BASE})}
+        inputs = relay.request_inputs(env)
+        self.assertEqual(json.loads(inputs['qase90_revisions']), {'bsd': HEAD, 'analytics': BASE})
+        self.assertEqual(relay.run_title(inputs), 'Qase 90 CI fin-assist/bank-bff 123/2')
+        run = completed_run(inputs)
+        qase = dict(completed_jobs()[0], name='qase90')
+        self.assertEqual(relay.gate_results(run, [qase], inputs)['accepted'], 'true')
+        for status in ('failure', 'skipped', 'cancelled', 'timed_out'):
+            self.assertEqual(relay.gate_results(run, [qase | {'conclusion': status}], inputs)['accepted'], 'false')
+        for jobs in ([], completed_jobs(), [qase, qase]):
+            with self.assertRaises(relay.Rejected): relay.gate_results(run, jobs, inputs)
+        for change in ({'CI_BROKER_MODE': 'unknown'}, {'CI_BROKER_MODE': 'service'},
+                       {'GITHUB_REPOSITORY': 'fin-assist/assistant'},
+                       {'SOURCE_HEAD_REPOSITORY': 'outsider/bank-bff'}):
+            with self.subTest(change=change), self.assertRaises(relay.Rejected): relay.request_inputs(env | change)
+        for value in ('', '{}', '[]', 'null', '{"bsd":"main","analytics":"main"}',
+                      json.dumps({'bsd': HEAD, 'analytics': BASE, 'repository': 'outsider/source'}),
+                      '{"bsd":"' + HEAD + '","bsd":"' + HEAD + '","analytics":"' + BASE + '"}',
+                      ' ' * 257):
+            with self.subTest(value=value), self.assertRaises(relay.Rejected):
+                relay.request_inputs(env | {'QASE90_REVISIONS': value})
+        self.assertIsNone(relay.select_run([run | {'display_title': 'Service CI fin-assist/bank-bff 123/2'}], inputs))
 
     def test_main_push_has_no_pr_identity(self):
         env = environment() | {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
@@ -261,8 +300,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("CI_BROKER_READ_TOKEN", execute["env"])
         self.assertEqual(execute["env"]["CI_BROKER_TOKEN"], "${{ secrets.CI_BROKER_TOKEN }}")
         self.assertEqual(execute["env"]["GO_CI_SHA"], "${{ job.workflow_sha }}")
+        self.assertEqual(execute['env']['CI_BROKER_MODE'], '${{ inputs.mode }}')
+        self.assertEqual(execute['env']['QASE90_REVISIONS'], '${{ inputs.qase90_revisions }}')
+        self.assertEqual(workflow[True]['workflow_call']['inputs'], {
+            'mode': {'type': 'string', 'default': 'service'},
+            'qase90_revisions': {'type': 'string', 'default': ''},
+        })
         self.assertEqual(set(workflow[True]["workflow_call"]["outputs"]),
-                         {*relay.GATES, "accepted", "source_run_attempt", "broker_url"})
+                         {*relay.GATES, "qase90", "accepted", "source_run_attempt", "broker_url"})
         self.assertFalse(any("upload-artifact" in step.get("uses", "") for step in job["steps"]))
 
 

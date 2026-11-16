@@ -23,6 +23,7 @@ SERVICE_REPOSITORIES = frozenset(
     )
 )
 GATES = ("go", "lint", "image", "migrations")
+QASE_REPOSITORY = "fin-assist/bank-bff"
 CONCLUSIONS = frozenset(("success", "failure", "cancelled", "skipped", "timed_out",
                          "action_required", "neutral", "stale", "startup_failure"))
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
@@ -45,6 +46,30 @@ class Transient(Rejected):
         self.retry_after = retry_after
 
 
+def qase90_revisions(raw):
+    """Accept only two fixed-repository revisions, never caller-selected repositories."""
+    if not isinstance(raw, str) or len(raw) > 256:
+        raise Rejected("Invalid Qase 90 revisions")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Rejected("Duplicate Qase 90 revision")
+            result[key] = value
+        return result
+
+    try:
+        values = json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, TypeError):
+        raise Rejected("Invalid Qase 90 revisions") from None
+    if (not isinstance(values, dict) or set(values) != {"bsd", "analytics"}
+            or not all(isinstance(value, str) and SHA_PATTERN.fullmatch(value)
+                       for value in values.values())):
+        raise Rejected("Invalid Qase 90 revisions")
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
+
+
 def request_inputs(environ):
     fields = {
         "source_repository": "GITHUB_REPOSITORY",
@@ -59,6 +84,14 @@ def request_inputs(environ):
     values = {key: environ.get(name, "") for key, name in fields.items()}
     if values["source_repository"] not in SERVICE_REPOSITORIES:
         raise Rejected("Unsupported source repository")
+    values["mode"] = environ.get("CI_BROKER_MODE", "service")
+    revisions = environ.get("QASE90_REVISIONS", "")
+    if values["mode"] == "qase90" and values["source_repository"] == QASE_REPOSITORY:
+        values["qase90_revisions"] = qase90_revisions(revisions)
+    elif values["mode"] == "service" and revisions == "":
+        values["qase90_revisions"] = ""
+    else:
+        raise Rejected("Unsupported private CI mode or revisions")
     for key in ("source_run_id", "source_run_attempt"):
         if not NUMBER_PATTERN.fullmatch(values[key]):
             raise Rejected(f"Invalid {key}")
@@ -82,8 +115,13 @@ def request_inputs(environ):
 
 
 def run_title(inputs):
-    return (f"Service CI {inputs['source_repository']} "
+    prefix = "Qase 90 CI" if inputs["mode"] == "qase90" else "Service CI"
+    return (f"{prefix} {inputs['source_repository']} "
             f"{inputs['source_run_id']}/{inputs['source_run_attempt']}")
+
+
+def gate_names(inputs):
+    return ("qase90",) if inputs["mode"] == "qase90" else GATES
 
 
 class GitHub:
@@ -193,7 +231,8 @@ def gate_results(run, jobs, inputs):
     if run.get("status") != "completed":
         raise Rejected("Private CI is not complete")
     results = {}
-    for gate in GATES:
+    gates = gate_names(inputs)
+    for gate in gates:
         matches = [job for job in jobs if job.get("name") == gate]
         if len(matches) != 1:
             raise Rejected(f"Expected exactly one {gate} job")
@@ -204,8 +243,9 @@ def gate_results(run, jobs, inputs):
                 or job.get("head_sha") != run["head_sha"]):
             raise Rejected(f"Unverified {gate} job outcome")
         results[gate] = job["conclusion"]
-    expected = {gate: "success" for gate in GATES}
-    if not inputs["source_pr_number"]:
+    expected = {gate: "success" for gate in gates}
+    if inputs["mode"] == "service" and (not inputs["source_pr_number"]
+                                        or inputs["source_repository"] == QASE_REPOSITORY):
         expected["migrations"] = "skipped"
     results["accepted"] = str(run.get("conclusion") == "success" and results == expected).lower()
     results["source_run_attempt"] = inputs["source_run_attempt"]
@@ -254,7 +294,7 @@ def main():
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
             summary.write(f"Private CI: [{result['broker_run_id']}]({result['broker_url']})\n\n")
             summary.write(f"Go CI source: `{inputs['go_ci_sha']}`\n\n")
-            summary.write(" | ".join(f"{gate}: {result[gate]}" for gate in GATES) + "\n")
+            summary.write(" | ".join(f"{gate}: {result[gate]}" for gate in gate_names(inputs)) + "\n")
         if result["accepted"] != "true":
             raise Rejected("Private CI did not pass all required gates")
     except Rejected as error:

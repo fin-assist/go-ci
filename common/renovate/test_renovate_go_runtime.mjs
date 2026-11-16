@@ -49,6 +49,37 @@ assert.equal(JSON.parse(execFileSync('python3', ['-B', '-c', code, controller], 
   input: JSON.stringify(mixed), encoding: 'utf8', timeout: 5000 })), true);
 console.log(source ? 'PASS: source uses-with Go extraction is disabled by baseline and guarded in mixed signed metadata' : 'PASS: real sample uses-with Go extraction and mixed signed metadata remain manual');
 
+// Both migration shapes must be understood by the real Actions extractor.
+const relayServices = new Set(['go-service-template', 'assistant', 'user', 'analytics',
+  'bank-bff', 'bank-statement-data'].map(name => `github.com/fin-assist/${name}`));
+const relayRef = 'fin-assist/go-ci/.github/workflows/shared-remote-ci.yml@main';
+async function sharedCI(content, module) {
+  const extracted = (await extractPackageFile(content, '.github/workflows/ci.yml'))?.deps ?? [];
+  const shared = extracted.filter(dep => dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci');
+  const refs = [...content.matchAll(/^[ \t]*uses:[ \t]+([^\s#]+)/gm)].map(match => match[1]);
+  if (refs.includes(relayRef)) {
+    assert.ok(relayServices.has(module), 'Only the six service modules may use the private relay');
+    assert.equal(refs.filter(ref => ref.startsWith('fin-assist/go-ci/.github/workflows/')).length, 1,
+      'A relayed CI cannot also execute shared service workflows locally');
+    assert.equal(shared.length, 1, 'The one service relay must be visible to the Actions manager');
+  } else {
+    assert.ok(shared.length >= 3, 'All legacy branch-backed shared workflows must remain visible');
+  }
+  return shared;
+}
+const fixture = refs => 'jobs:\n' + refs.map((ref, index) => `  job${index}:\n    uses: ${ref}\n`).join('');
+for (const name of ['go-service-template', 'assistant', 'user', 'analytics', 'bank-bff', 'bank-statement-data']) {
+  assert.equal((await sharedCI(fixture([relayRef]), `github.com/fin-assist/${name}`)).length, 1);
+}
+const legacyRefs = ['go', 'lint', 'image'].map(kind => `fin-assist/go-ci/.github/workflows/shared-${kind}.yml@main`);
+assert.equal((await sharedCI(fixture(legacyRefs), 'github.com/fin-assist/user')).length, 3);
+for (const [module, refs] of [
+  ['github.com/fin-assist/go-worker', [relayRef]], ['example.com/service', [relayRef]],
+  ['github.com/fin-assist/user', [relayRef, legacyRefs[0]]],
+  ['github.com/fin-assist/bank-bff', [relayRef, relayRef]],
+]) await assert.rejects(sharedCI(fixture(refs), module));
+console.log('PASS: real Actions extraction accepts six service relays and legacy callers, rejects mixed/unknown callers');
+
 // Extract every shared action/manifest/test-input pin with the real managers and
 // apply the caller's reviewed package rules. This catches a selector that silently
 // stops updating source-revision, as well as action pins split into another group.
@@ -61,16 +92,8 @@ if (existsSync(manifestPath) && revision === undefined) {
   const effective = mergeChildConfig(baseline, active);
   const file = '.github/workflows/ci.yml';
   const content = readFileSync(resolve(root, file), 'utf8');
-  const extracted = (await extractPackageFile(content, file))?.deps ?? [];
-  const shared = extracted.filter(dep => dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci');
   const module = readFileSync(resolve(root, 'go.mod'), 'utf8').match(/^module[ \t]+(\S+)[ \t]*$/m)?.[1];
-  const relay = 'fin-assist/go-ci/.github/workflows/shared-remote-ci.yml@main';
-  const workflowRefs = [...content.matchAll(/^[ \t]*uses:[ \t]+([^\s#]+)/gm)].map(match => match[1]);
-  if (module === 'github.com/fin-assist/go-service-template' && workflowRefs.includes(relay)) {
-    assert.equal(shared.length, 1, 'The template relay must be visible to the Actions manager');
-  } else {
-    assert.ok(shared.length >= 3, 'All branch-backed shared workflows must be visible to the Actions manager');
-  }
+  const shared = await sharedCI(content, module);
   for (const dep of shared) {
     normalizeDepNames(dep);
     assert.equal(dep.currentValue, 'main');

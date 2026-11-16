@@ -9,6 +9,9 @@ This repository owns reusable Go CI, lint profiles and their regression tests. I
 - Read README and docs/shared-go-ci.md before changing policy.
 - Every test/process must have a real timeout. Never run UI tests or create tags.
 - FIN-516 Go consumers track protected go-ci main. Preserve SHA identity per CI attempt and matching prepared inputs. Preserve immutable pins and grouped Renovate updates for callers outside this migration.
+- FIN-524 relay callers are limited to the six service profiles; libraries keep their existing workflows.
+  Preserve bank-bff without migrations, its separate Qase 90 context and sequential Go suites.
+  Relayed callers must not retain source private-input producers, binary uploads or production publishers.
 - Ordinary source PRs require owner authorization to merge. Do not change protections or secrets.
 - Request both reviewers with an intentional comment beginning `@codex @claude`; include Security and Tests. After a pushed fix, reply/resolve findings and request both immediately without waiting for CI.
 - FIN-456 owns one shared Renovate controller/regression suite in `common/renovate/`; `.github/renovate-policy.json`,

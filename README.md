@@ -13,7 +13,9 @@
 FIN-457: [тесты и coverage](docs/shared-quality.md), [stage-артефакты](docs/stage-artifacts.md),
 [parser CHANGELOG](docs/changelog-tooling.md), [сервисные GitHub Release](docs/service-release.md).
 
-FIN-517: [CI и приватная доставка при смене видимости сервиса](docs/visibility-independent-ci.md).
+FIN-517/FIN-524: [CI и приватная доставка при смене видимости сервиса](docs/visibility-independent-ci.md).
+Relay-контракт поддерживает шесть сервисных потребителей и отдельный Qase 90 bank-bff;
+legacy callers сохраняются до завершения индивидуальной миграции.
 
 ## Проверка источника
 

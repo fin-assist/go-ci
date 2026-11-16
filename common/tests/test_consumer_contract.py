@@ -1,5 +1,6 @@
 """Mutations of real caller files must fail the shared consumer contract."""
 import importlib.util
+import copy
 import io
 import json
 from pathlib import Path
@@ -77,8 +78,9 @@ class ConsumerContractTests(unittest.TestCase):
         stream = io.StringIO()
         return unittest.TextTestRunner(stream=stream).run(CONTRACT.suite(self.root, COMMON))
 
-    def relay_fixture(self):
-        self.fixture(module='github.com/fin-assist/go-service-template')
+    def relay_fixture(self, module='github.com/fin-assist/go-service-template'):
+        (self.root / '.github/workflows/qase90.yml').unlink(missing_ok=True)
+        self.fixture(module=module)
         self.quality_make()
         (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'service'}))
         (self.root / '.github/workflows/private-ci-inputs.yml').unlink()
@@ -93,6 +95,8 @@ class ConsumerContractTests(unittest.TestCase):
                         'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
         }}
         for kind in ('go', 'lint', 'image', 'migrations'):
+            if kind == 'migrations' and module == 'github.com/fin-assist/bank-bff':
+                continue
             jobs[kind] = {
                 'needs': 'relay',
                 'if': "always() && github.event_name == 'pull_request'" if kind == 'migrations' else 'always()',
@@ -107,16 +111,29 @@ class ConsumerContractTests(unittest.TestCase):
                           'test "$SOURCE_RUN_ATTEMPT" = "$EXPECTED_RUN_ATTEMPT"\n'
                           'test "$RESULT" = success\n'}],
             }
+        if module == 'github.com/fin-assist/bank-bff':
+            call, gate = copy.deepcopy(jobs['relay']), copy.deepcopy(jobs['go'])
+            call['with'] = {'mode': 'qase90', 'qase90_revisions': json.dumps({'bsd': PIN, 'analytics': 'b' * 40})}
+            gate.update(name='Qase 90 cross-service', needs='qase90-check')
+            gate['env'] = {key: value.replace('needs.relay.', 'needs.qase90-check.').replace('outputs.go ', 'outputs.qase90 ')
+                           for key, value in gate['env'].items()}
+            (self.root / '.github/workflows/qase90.yml').write_text(yaml.safe_dump({
+                'name': 'Qase 90 cross-service', 'on': {'pull_request': None, 'push': {'branches': ['main']}},
+                'permissions': {'contents': 'read'}, 'jobs': {'qase90-check': call, 'qase90': gate},
+            }))
         return {'name': 'CI', 'on': {'pull_request': None, 'push': {'branches': ['main']}},
                 'permissions': {'contents': 'read'}, 'jobs': jobs}
 
-    def test_private_relay_accepts_template_and_executes_fail_closed_facades(self):
-        result = self.result(self.relay_fixture())
-        self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
-        self.assertEqual(result.testsRun, 3)
+    def test_private_relay_accepts_six_services_with_their_existing_facades(self):
+        for name in ('go-service-template', 'assistant', 'user', 'analytics',
+                     'bank-bff', 'bank-statement-data'):
+            with self.subTest(repository=name):
+                result = self.result(self.relay_fixture('github.com/fin-assist/' + name))
+                self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+                self.assertEqual(result.testsRun, 3)
 
     def test_private_relay_requires_trusted_source_and_exact_secret_boundary(self):
-        for mutation in ('source-pin', 'source-path', 'revision', 'library', 'production-service',
+        for mutation in ('source-pin', 'source-path', 'revision', 'library', 'library-module',
                          'unknown-service', 'fork', 'push-branch', 'secrets-inherit', 'wrong-token',
                          'missing-reader', 'checkout', 'caller-input', 'trigger', 'name', 'permissions',
                          'workflow-shell', 'workflow-env'):
@@ -129,9 +146,9 @@ class ConsumerContractTests(unittest.TestCase):
                     (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'service', 'revision': PIN}))
                 elif mutation == 'library':
                     (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'library'}))
-                elif mutation in ('production-service', 'unknown-service'):
+                elif mutation in ('library-module', 'unknown-service'):
                     (self.root / 'go.mod').write_text('module ' + (
-                        'github.com/fin-assist/user' if mutation == 'production-service' else 'example.com/fork') + '\n')
+                        'github.com/fin-assist/go-worker' if mutation == 'library-module' else 'example.com/fork') + '\n')
                 elif mutation == 'fork': relay['if'] = "github.event_name == 'pull_request'"
                 elif mutation == 'push-branch': relay['if'] = relay['if'].replace(" && github.ref == 'refs/heads/main'", '')
                 elif mutation == 'secrets-inherit': relay['secrets'] = 'inherit'
@@ -144,6 +161,22 @@ class ConsumerContractTests(unittest.TestCase):
                 elif mutation == 'permissions': doc['permissions']['contents'] = 'write'
                 elif mutation == 'workflow-shell': doc['defaults'] = {'run': {'shell': 'echo {0}'}}
                 elif mutation == 'workflow-env': doc['env'] = {'BASH_ENV': '/tmp/bypass.sh'}
+                self.assertFalse(self.result(doc).wasSuccessful())
+
+    def test_private_relay_preserves_each_services_migrations_and_release_checkout(self):
+        for module in ('bank-bff', 'assistant', 'user', 'analytics', 'bank-statement-data'):
+            with self.subTest(module=module):
+                doc = self.relay_fixture('github.com/fin-assist/' + module)
+                if module == 'bank-bff':
+                    doc['jobs']['migrations'] = dict(doc['jobs']['go'])
+                else:
+                    del doc['jobs']['migrations']
+                self.assertFalse(self.result(doc).wasSuccessful())
+                doc = self.relay_fixture('github.com/fin-assist/' + module)
+                release = self.root / '.github/workflows/release.yml'
+                data = yaml.safe_load(release.read_text())
+                data['jobs']['release']['with']['checkout_version'] = 'v4' if module == 'bank-bff' else 'v7'
+                release.write_text(yaml.safe_dump(data))
                 self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_private_relay_rejects_source_artifact_producers_and_production_publishers(self):
@@ -166,6 +199,32 @@ class ConsumerContractTests(unittest.TestCase):
                 path.write_text(content)
                 self.assertFalse(self.result(doc).wasSuccessful())
                 path.unlink()
+
+    def test_relay_bank_bff_preserves_separate_qase_pipeline_and_current_attempt_facade(self):
+        for mutation in ('missing', 'other-service', 'name', 'trigger', 'source', 'fork', 'secret',
+                         'mode', 'revisions', 'input-repository', 'old-attempt', 'go-result', 'upload'):
+            with self.subTest(mutation=mutation):
+                doc = self.relay_fixture('github.com/fin-assist/bank-bff')
+                path = self.root / '.github/workflows/qase90.yml'
+                qase = yaml.safe_load(path.read_text())
+                call, gate = qase['jobs']['qase90-check'], qase['jobs']['qase90']
+                if mutation == 'missing':
+                    path.unlink()
+                else:
+                    if mutation == 'other-service': (self.root / 'go.mod').write_text('module github.com/fin-assist/assistant\n')
+                    elif mutation == 'name': qase['name'] = 'Qase'
+                    elif mutation == 'trigger': qase['on']['pull_request_target'] = qase['on'].pop('pull_request')
+                    elif mutation == 'source': call['uses'] = 'fin-assist/go-ci/.github/workflows/shared-qase90.yml@main'
+                    elif mutation == 'fork': call['if'] = 'true'
+                    elif mutation == 'secret': call['secrets'] = 'inherit'
+                    elif mutation == 'mode': call['with']['mode'] = 'service'
+                    elif mutation == 'revisions': call['with']['qase90_revisions'] = '{"bsd":"main","analytics":"main"}'
+                    elif mutation == 'input-repository': call['with']['repository'] = 'outsider/source'
+                    elif mutation == 'old-attempt': gate['env']['SOURCE_RUN_ATTEMPT'] = '${{ github.run_attempt }}'
+                    elif mutation == 'go-result': gate['env']['RESULT'] = '${{ needs.qase90-check.outputs.go }}'
+                    elif mutation == 'upload': gate['steps'].append({'uses': 'actions/upload-artifact/merge@' + PIN})
+                    path.write_text(yaml.safe_dump(qase))
+                self.assertFalse(self.result(doc).wasSuccessful())
 
     def test_private_relay_rejects_facade_attempt_and_result_bypasses(self):
         for kind in ('go', 'lint', 'image', 'migrations'):

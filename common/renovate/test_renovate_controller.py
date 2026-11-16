@@ -171,6 +171,57 @@ class MultiWorkflowFake(Fake):
 
 
 class MultiWorkflowControllerTests(unittest.TestCase):
+    def service_relay(self, bff=False):
+        api = MultiWorkflowFake()
+        gates = ['go', 'lint', 'image'] + ([] if bff else ['migrations'])
+        policy = ['Renovate policy tests', 'Renovate runtime contract']
+        api.config.update(ciChecks=gates, requiredChecks=gates + policy)
+        api.runs['ci.yml']['referenced_workflows'] = [{
+            'path': 'fin-assist/go-ci/.github/workflows/shared-remote-ci.yml@main',
+            'ref': 'refs/heads/main', 'sha': 'a' * 40}]
+        api.jobs_by_workflow = {
+            'ci.yml': [dict(api.jobs[0], name=name) for name in [*gates, 'relay / relay']],
+            'renovate-policy-tests.yml': [dict(api.jobs[0], name=name) for name in policy],
+        }
+        return api
+
+    def test_service_relay_facades_keep_original_workflow_routing_and_retry(self):
+        for bff in (False, True):
+            with self.subTest(bff=bff):
+                api = self.service_relay(bff)
+                api.runs['ci.yml'].update(conclusion='failure')
+                for job in api.jobs_by_workflow['ci.yml']: job['conclusion'] = 'failure'
+                reconcile(api, api.config)
+                self.assertEqual(api.reruns(), ['actions/runs/1/rerun-failed-jobs'])
+                api.runs['ci.yml'].update(conclusion='success', run_attempt=2)
+                for job in api.jobs_by_workflow['ci.yml']: job['conclusion'] = 'success'
+                api.job_paths.clear()
+                reconcile(api, api.config)
+                self.assertTrue(any(path == 'pulls/1/merge' for path, _ in api.actions))
+                self.assertIn('actions/runs/1/attempts/2/jobs', api.job_paths)
+                self.assertIn('actions/runs/2/attempts/1/jobs', api.job_paths)
+                self.assertNotIn('actions/runs/1/attempts/1/jobs', api.job_paths)
+
+    def test_partial_relay_rerun_cannot_reuse_old_successful_facades(self):
+        for bff in (False, True):
+            for status in ('success', 'failure'):
+                with self.subTest(bff=bff, status=status):
+                    api = self.service_relay(bff)
+                    old_jobs = copy.deepcopy(api.jobs_by_workflow['ci.yml'])
+                    api.runs['ci.yml'].update(conclusion=status, run_attempt=2)
+                    api.jobs_by_workflow['ci.yml'] = [dict(api.jobs[0], name='relay / relay', conclusion=status)]
+                    original = api.pages
+
+                    def pages(path, key=None):
+                        if path == 'actions/runs/1/attempts/1/jobs': return old_jobs
+                        return original(path, key)
+
+                    api.pages = pages
+                    reconcile(api, api.config)
+                    self.assertEqual(api.actions, [])
+                    self.assertEqual(api.receipts, {})
+                    self.assertNotIn('actions/runs/1/attempts/1/jobs', api.job_paths)
+
     def test_policy_failure_with_green_main_retries_policy_then_closes(self):
         api = MultiWorkflowFake()
         api.outcome('renovate-policy-tests.yml', 'failure')

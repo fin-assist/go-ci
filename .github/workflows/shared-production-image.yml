@@ -59,20 +59,6 @@ jobs:
           IFS=$'\t' read -r run attempt sha <<< "$source"
           [[ "$run" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ && "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
           printf 'run=%s\nattempt=%s\nsha=%s\n' "$run" "$attempt" "$sha" >> "$GITHUB_OUTPUT"
-      - name: Verify completed source CI gates
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN: ${{ steps.source.outputs.run }}
-          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
-        run: |
-          set -euo pipefail
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT/jobs?per_page=100" |
-            jq -e '
-              [.[].jobs[]] as $jobs |
-              ["go", "lint", "image"] |
-              all(. as $gate | [$jobs[] | select(.name == $gate)] |
-                  length == 1 and all(.status == "completed" and .conclusion == "success"))
-            ' > /dev/null
       - name: Check the caller and existing package are private
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,13 +74,68 @@ jobs:
             cat "$error" >&2
             exit 1
           fi
+      - name: Recognize a published legacy tag on a CI rerun
+        id: legacy
+        if: steps.source.outputs.attempt != '1'
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # FIN-516: go-ci #65 enabled reproducible image builds.
+          cutover=2026-11-15T15:42:22Z
+          epoch=$(jq -en --arg cutoff "$cutover" '$cutoff | fromdateiso8601')
+          service="${GITHUB_REPOSITORY#fin-assist/}"
+          package="orgs/fin-assist/packages/container/$service"
+          error="$RUNNER_TEMP/legacy-package-error"
+          if ! versions=$(gh api --paginate --slurp "$package/versions?state=active&per_page=100" 2>"$error"); then
+            if grep -q 'HTTP 404' "$error"; then
+              exit 0
+            fi
+            cat "$error" >&2
+            exit 1
+          fi
+          digest=$(jq -er --arg tag "sha-$SOURCE_SHA" --argjson cutoff "$epoch" '
+            [.[][] | select(any(.metadata.container.tags[]?; . == $tag))] |
+            if length == 0 then ""
+            elif length == 1 then
+              .[0] |
+              if (.created_at | fromdateiso8601) < $cutoff then
+                .name | select(test("^sha256:[0-9a-f]{64}$"))
+              else "" end
+            else error("Multiple package versions claim the same commit tag")
+            end
+          ' <<< "$versions")
+          if [[ -n "$digest" ]]; then
+            printf 'retained=true\n' >> "$GITHUB_OUTPUT"
+            printf 'Existing legacy image retained: `ghcr.io/%s@%s`. This CI attempt did not publish an image.\n' \
+              "$GITHUB_REPOSITORY" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Verify completed source CI gates
+        if: steps.legacy.outputs.retained != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ steps.source.outputs.run }}
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT/jobs?per_page=100" |
+            jq -e '
+              [.[].jobs[]] as $jobs |
+              ["go", "lint", "image"] |
+              all(. as $gate | [$jobs[] | select(.name == $gate)] |
+                  length == 1 and all(.status == "completed" and .conclusion == "success"))
+            ' > /dev/null
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: steps.legacy.outputs.retained != 'true'
         with:
           name: production-image-${{ github.event.repository.name }}-${{ steps.source.outputs.sha }}-${{ steps.source.outputs.attempt }}
           github-token: ${{ github.token }}
           run-id: ${{ steps.source.outputs.run }}
           path: ${{ runner.temp }}/service-image
       - name: Validate image and build evidence
+        if: steps.legacy.outputs.retained != 'true'
         id: validated
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
@@ -124,6 +165,7 @@ jobs:
           test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
           printf 'config_digest=sha256:%s\n' "$config_hash" >> "$GITHUB_OUTPUT"
       - name: Scan image and generate SBOM
+        if: steps.legacy.outputs.retained != 'true'
         run: |
           set -euo pipefail
           # https://github.com/aquasecurity/trivy/releases/tag/v0.76.0
@@ -146,6 +188,7 @@ jobs:
           "$tool/trivy" image --timeout 5m --scanners vuln --skip-db-update --skip-java-db-update \
             --input image.tar --format cyclonedx --output sbom.cdx.json
       - name: Install pinned registry client
+        if: steps.legacy.outputs.retained != 'true'
         run: |
           set -euo pipefail
           # https://github.com/google/go-containerregistry/releases/tag/v0.22.1
@@ -158,6 +201,7 @@ jobs:
           tar -xzf "$tool/crane.tar.gz" -C "$tool" crane
           printf '%s\n' "$tool" >> "$GITHUB_PATH"
       - name: Publish approved image by commit and verify digest
+        if: steps.legacy.outputs.retained != 'true'
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -217,6 +261,7 @@ jobs:
           printf 'image=%s@%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
           printf 'GHCR digest for the infra PR: `%s@%s`\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.legacy.outputs.retained != 'true'
         with:
           name: production-evidence-${{ steps.source.outputs.sha }}-${{ github.run_attempt }}
           path: |

@@ -97,6 +97,12 @@ python3 scripts/common_ci.py render --source ../go-ci/common
 
 Для защищённых строк API вернул `strict: true`, checks от GitHub Actions (`app_id: 15368`). `bank-bff` нельзя считать защищённым по аналогии с остальными. В той же сверке API rulesets с учётом inherited rulesets вернул пустой список для всех 15 репозиториев; отдельная защита rulesets в этом снимке отсутствует. Настройка или изменение защит остаётся действием владельца и не выполняется этим переходом. Перед merge проверяется, что существующие требуемые контексты продолжают появляться; если потребуется настройка владельца, её явно выносят в план перехода.
 
+FIN-515: unit, integration и API выполняются параллельно в трёх изолированных matrix jobs
+с `fail-fast: false`, а tidy/vet/script/CHANGELOG checks — в отдельном job. Итоговый `check`
+требует успеха всех jobs; прежний required `go` остаётся у потребителя. Coverage передаётся
+между jobs только артефактами текущей попытки. При частичном повторе без всех трёх профилей
+CI требует **Re-run all jobs**; детали и формат artifacts — в [shared-quality.md](shared-quality.md).
+
 Go unit/integration/API независимо сохраняют total80 всего production-знаменателя, PG18, race/count1, таймауты, inventory тестов, валидацию непустых выполненных suites и coverage artifacts. Combined не компенсирует провал уровня. У сервисов не появляется библиотечное исключение `internal/pgtest`; у библиотек исключается только точный пакет `<module>/internal/pgtest`, сами его тесты выполняются. N/A остаётся ограниченным фиксированной identity исходного `go-library-template`. Ни новый репозиторий с прежним module path, ни параметр профиля не наследуют это разрешение.
 
 Компилятор тестов берётся из `go.mod`: `setup-go` сохраняет `GOTOOLCHAIN=local` для inventory и collectors. Закреплённые анализаторы coverage/gorelease и script fixtures запускаются отдельно с `GOTOOLCHAIN=auto`, поскольку их минимальная версия Go может быть выше версии проекта. Это не меняет компилятор production-кода и не снижает пороги.

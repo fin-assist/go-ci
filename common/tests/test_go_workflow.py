@@ -18,7 +18,7 @@ def document(name):
 
 
 def steps(name):
-    return document(name)['jobs']['check']['steps']
+    return [step for job in document(name)['jobs'].values() for step in job['steps']]
 
 
 def named(name, title):
@@ -105,8 +105,7 @@ class SharedGoWorkflowTests(unittest.TestCase):
             self.assertIn('unexpected source repository', bad.stderr)
             for workflow in ('shared-go.yml', 'shared-lint.yml', 'shared-api.yml', 'shared-image.yml'):
                 definition = document(workflow)
-                job, = definition['jobs'].values()
-                fix = next(step for step in job['steps'] if step.get('name') == 'Set the canonical go-ci cache origin')
+                fix = next(step for step in steps(workflow) if step.get('name') == 'Set the canonical go-ci cache origin')
                 self.assertEqual(fix['if'], "github.event_name == 'push'")
                 result = subprocess.run(['bash', '-e', '-c', fix['run']], cwd=root,
                                         env={**os.environ, 'SHARED_REVISION': revision, 'CI_REVISION': revision},
@@ -262,11 +261,10 @@ if report is not None:
     def test_analyzers_can_select_their_toolchain_without_changing_test_compiler(self):
         script_tests = named('shared-go.yml', 'Test the scripts')
         self.assertEqual(script_tests['env']['GOTOOLCHAIN'], 'auto')
-        for suite in ['unit', 'integration', 'api']:
-            check = named('shared-go.yml', f'Require 80 percent {suite} statements coverage')
-            self.assertEqual(check['env']['GOTOOLCHAIN'], 'auto')
-            collector = named('shared-go.yml', f'Collect {suite} statements coverage')
-            self.assertNotIn('GOTOOLCHAIN', collector.get('env', {}))
+        check = named('shared-go.yml', 'Require 80 percent suite statements coverage')
+        self.assertEqual(check['env']['GOTOOLCHAIN'], 'auto')
+        collector = named('shared-go.yml', 'Collect suite statements coverage')
+        self.assertNotIn('GOTOOLCHAIN', collector.get('env', {}))
         api = named('shared-api.yml', 'API changes')
         self.assertEqual(api['env']['GOTOOLCHAIN'], 'auto')
 
@@ -284,27 +282,145 @@ if report is not None:
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
+    def test_parallel_suites_are_isolated_and_cannot_cancel_each_other(self):
+        jobs = document('shared-go.yml')['jobs']
+        suite = jobs['suite']
+        self.assertEqual(suite['strategy'], {'fail-fast': False,
+                                            'matrix': {'suite': ['unit', 'integration', 'api']}})
+        self.assertNotIn('needs', suite)
+        self.assertNotIn('needs', jobs['checks'])
+        self.assertEqual(jobs['check']['needs'], ['checks', 'suite'])
+        self.assertEqual(jobs['check']['if'], 'always()')
+        for job in jobs.values():
+            self.assertEqual(job['runs-on'], 'ubuntu-latest')
+            self.assertGreater(job['timeout-minutes'], 0)
+            restore = next(step for step in job['steps'] if step.get('name') == 'Restore private CI inputs')
+            self.assertEqual(restore['with']['revision'], '${{ env.SHARED_REVISION }}')
+            self.assertEqual(restore['with']['run-id'], '${{ inputs.private_input_run_id }}')
+            self.assertEqual(restore['with']['artifact-name'], '${{ inputs.private_input_artifact }}')
+            self.assertNotIn('TEST_DATABASE_URL', job.get('env', {}))
+            self.assertEqual(restore['if'], "github.event_name == 'pull_request'")
+            resolve = next(step for step in job['steps'] if step.get('name') == 'Resolve the shared workflow revision')
+            self.assertEqual(resolve['env']['RESOLVED_SHA'], '${{ inputs.revision || job.workflow_sha }}')
+            source = next(step for step in job['steps'] if step.get('name') == 'Checkout private CI source on trusted pushes')
+            self.assertEqual(source['if'], "github.event_name == 'push'")
+            self.assertEqual(source['with']['ref'], '${{ env.SHARED_REVISION }}')
+            self.assertEqual(source['with']['token'], "${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}")
+            for step in job['steps']:
+                if step.get('uses', '').startswith('actions/checkout@'):
+                    self.assertIs(step['with']['persist-credentials'], False)
+        self.assertNotIn('Test the scripts', [step.get('name') for step in suite['steps']])
+        clean = named('shared-go.yml', 'Remove stale suite evidence')
+        self.assertLess(suite['steps'].index(clean), next(index for index, step in enumerate(suite['steps'])
+                                                        if step.get('name') == 'Restore private CI inputs'))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for suffix in ('out', 'jsonl', 'coverage.txt', 'report.txt'):
+                (root / ('unit.' + suffix)).write_text('stale evidence')
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', clean['run']], cwd=root,
+                                    env={**os.environ, 'SUITE': 'unit'}, capture_output=True,
+                                    text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(list(root.iterdir()))
+
     def test_every_collector_and_independent_gate_is_required(self):
-        gate = named('shared-go.yml', 'Require all three suites and thresholds')
-        self.assertEqual(gate['if'], 'always()')
-        outcomes = {key: 'success' for key in gate['env']}
-        self.assertEqual(set(outcomes), {'COLLECT_UNIT', 'CHECK_UNIT', 'COLLECT_INTEGRATION',
-                                        'CHECK_INTEGRATION', 'COLLECT_API', 'CHECK_API'})
-        self.assertEqual(run(gate['run'], **outcomes).returncode, 0)
-        for key in outcomes:
-            for rejected in ['', 'failure', 'skipped', 'cancelled']:
-                with self.subTest(outcome=key, rejected=rejected):
-                    self.assertNotEqual(run(gate['run'], **{**outcomes, key: rejected}).returncode, 0)
-        indexed = {step['id']: step for step in steps('shared-go.yml') if 'id' in step}
-        for suite in ['unit', 'integration', 'api']:
-            collect, check = indexed['collect_'+suite], indexed['check_'+suite]
-            self.assertIn('make collect-'+suite, collect['run'])
-            self.assertIn('--root "$GITHUB_WORKSPACE" collect '+suite, collect['run'])
-            self.assertIs(collect['continue-on-error'], True)
-            self.assertIn('make check-'+suite, check['run'])
-            self.assertIn('--root "$GITHUB_WORKSPACE" check '+suite, check['run'])
-            self.assertIs(check['continue-on-error'], True)
-            self.assertEqual(check['if'], f"always() && steps.collect_{suite}.outcome == 'success'")
+        mappings = {
+            'Require all three suites and checks': {
+                'CHECKS': '${{ needs.checks.result }}',
+                'CHECKS_ATTEMPT': '${{ needs.checks.outputs.run_attempt }}',
+                'SUITES': '${{ needs.suite.result }}',
+                'INPUTS': '${{ steps.coverage_inputs.outcome }}'},
+            'Require the suite and its threshold': {
+                'COLLECT': '${{ steps.collect.outcome }}',
+                'THRESHOLD': '${{ steps.threshold.outcome }}'},
+        }
+        for title, mapping in mappings.items():
+            gate = named('shared-go.yml', title)
+            self.assertEqual(gate['if'], 'always()')
+            self.assertEqual(gate['env'], mapping)
+            outcomes = {key: 'success' for key in mapping if key != 'CHECKS_ATTEMPT'}
+            attempt = {'CHECKS_ATTEMPT': '2', 'GITHUB_RUN_ATTEMPT': '2'}
+            self.assertEqual(run(gate['run'], **outcomes, **attempt).returncode, 0)
+            for key in outcomes:
+                for rejected in ['', 'failure', 'skipped', 'cancelled']:
+                    with self.subTest(gate=title, outcome=key, rejected=rejected):
+                        self.assertNotEqual(run(gate['run'], **{**outcomes, key: rejected},
+                                                **attempt).returncode, 0)
+        collect = named('shared-go.yml', 'Collect suite statements coverage')
+        check = named('shared-go.yml', 'Require 80 percent suite statements coverage')
+        self.assertIs(collect['continue-on-error'], True)
+        self.assertIs(check['continue-on-error'], True)
+        self.assertEqual(check['if'], "always() && steps.collect.outcome == 'success'")
+        for step in (collect, check):
+            self.assertEqual(step['env']['SUITE'], '${{ matrix.suite }}')
+        combined = named('shared-go.yml', 'Combined statements coverage (informational union)')
+        self.assertEqual(combined['if'], "always() && steps.coverage_inputs.outcome == 'success'")
+
+    def test_successful_checks_from_another_attempt_cannot_satisfy_the_gate(self):
+        checks = document('shared-go.yml')['jobs']['checks']
+        self.assertEqual(checks['outputs'], {'run_attempt': '${{ github.run_attempt }}'})
+        gate = named('shared-go.yml', 'Require all three suites and checks')['run']
+        outcomes = {'CHECKS': 'success', 'SUITES': 'success', 'INPUTS': 'success',
+                    'GITHUB_RUN_ATTEMPT': '2'}
+        for checks_attempt in ('', '1', '3'):
+            with self.subTest(checks_attempt=checks_attempt):
+                result = run(gate, **outcomes, CHECKS_ATTEMPT=checks_attempt)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Checks must run in this CI attempt', result.stderr)
+        self.assertEqual(run(gate, **outcomes, CHECKS_ATTEMPT='2').returncode, 0)
+
+    def test_current_attempt_artifacts_are_required_and_cannot_overwrite_code(self):
+        upload = named('shared-go.yml', 'Upload suite coverage evidence')
+        self.assertEqual(upload['if'], 'always()')
+        self.assertEqual(upload['with']['name'],
+                         'coverage-suite-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}')
+        self.assertEqual(upload['with']['if-no-files-found'], 'error')
+        self.assertEqual(upload['with']['path'].splitlines(),
+                         ['${{ matrix.suite }}.' + suffix for suffix in ('out', 'jsonl', 'coverage.txt', 'report.txt')])
+        download = named('shared-go.yml', "Download this attempt's suite evidence")
+        self.assertEqual(download['if'], 'always()')
+        self.assertEqual(download['with']['pattern'],
+                         'coverage-suite-${{ github.run_id }}-${{ github.run_attempt }}-*')
+        self.assertNotIn('run-id', download['with'])
+        self.assertNotIn('merge-multiple', download['with'])
+        command = named('shared-go.yml', 'Require and stage all three suite profiles')['run']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / 'temp' / 'finassist-coverage'
+            artifacts.mkdir(parents=True)
+            code = root / 'Makefile'
+            code.write_text('original code')
+            for level in ('unit', 'integration', 'api'):
+                source = artifacts / ('coverage-suite-123-2-' + level)
+                source.mkdir()
+                for suffix in ('out', 'jsonl', 'coverage.txt', 'report.txt'):
+                    (source / (level + '.' + suffix)).write_text(level + '.' + suffix)
+                (source / 'Makefile').write_text('untrusted artifact code')
+            env = {**os.environ, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2',
+                   'RUNNER_TEMP': str(root / 'temp')}
+            def stage():
+                return subprocess.run(['bash', '-euo', 'pipefail', '-c', command], cwd=root,
+                                      env=env, capture_output=True, text=True, timeout=5)
+            good = stage()
+            self.assertEqual(good.returncode, 0, good.stderr)
+            self.assertEqual(code.read_text(), 'original code')
+            for level in ('unit', 'integration', 'api'):
+                self.assertEqual((root / (level + '.out')).read_text(), level + '.out')
+            missing = artifacts / 'coverage-suite-123-2-api'
+            missing.rename(artifacts / 'coverage-suite-123-1-api')
+            (root / 'combined.report.txt').write_text('stale combined')
+            absent = stage()
+            self.assertNotEqual(absent.returncode, 0)
+            self.assertIn('Missing api evidence', absent.stderr)
+            self.assertFalse((root / 'api.out').exists())
+            self.assertFalse((root / 'combined.report.txt').exists())
+            # Existing profiles from the checkout cannot replace missing current-attempt inputs.
+            (root / 'api.out').write_text('stale profile')
+            self.assertNotEqual(stage().returncode, 0)
+            self.assertFalse((root / 'api.out').exists())
+            (artifacts / 'coverage-suite-123-1-api').rename(missing)
+            (missing / 'api.jsonl').write_text('')
+            self.assertNotEqual(stage().returncode, 0)
 
     def test_quality_runner_is_explicit_and_legacy_profiles_do_not_migrate_implicitly(self):
         workflow = document('shared-go.yml')
@@ -325,10 +441,10 @@ if report is not None:
 
     def test_quality_and_legacy_branches_execute_only_the_selected_runner_and_propagate_failure(self):
         self.assertNotIn('All tests belong to a suite', [step.get('name') for step in steps('shared-go.yml')])
-        routes = [('Combined statements coverage (informational union)', ['combined'], ['cover-combined'])]
+        routes = [('Combined statements coverage (informational union)', ['combined'], ['cover-combined'], '')]
         for level in ['unit', 'integration', 'api']:
-            routes += [(f'Collect {level} statements coverage', ['collect', level], ['collect-' + level]),
-                       (f'Require 80 percent {level} statements coverage', ['check', level], ['check-' + level])]
+            routes += [('Collect suite statements coverage', ['collect', level], ['collect-' + level], level),
+                       ('Require 80 percent suite statements coverage', ['check', level], ['check-' + level], level)]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for command in ['python3', 'make']:
@@ -336,14 +452,14 @@ if report is not None:
                 path.write_text('#!/bin/sh\nprintf "%s\\n" "' + command + '" "$@"\nexit "${FIXTURE_EXIT:-0}"\n')
                 path.chmod(0o755)
             for profile in ['service', 'library']:
-                for title, shared_args, legacy_args in routes:
+                for title, shared_args, legacy_args, level in routes:
                     for optin in ['true', 'false']:
                         for status in ['0', '7']:
                             with self.subTest(profile=profile, step=title, optin=optin, status=status):
                                 result = run(named('shared-go.yml', title)['run'],
                                              PATH=str(root) + os.pathsep + os.environ['PATH'],
                                              SHARED_QUALITY=optin, SHARED_PROFILE=profile, SHARED_REVISION='a'*40,
-                                             GITHUB_WORKSPACE=str(root / 'consumer with spaces'), FIXTURE_EXIT=status)
+                                             GITHUB_WORKSPACE=str(root / 'consumer with spaces'), FIXTURE_EXIT=status, SUITE=level)
                                 expected = (['python3', '-B', f'.finassist-ci/{"a"*40}/common/scripts/quality.py',
                                              '--root', str(root / 'consumer with spaces')] + shared_args
                                             if optin == 'true' else ['make'] + legacy_args)
@@ -355,13 +471,31 @@ if report is not None:
         self.assertEqual(summary['if'], 'always()')
         self.assertIn('Only the original empty go-library-template reports N/A after successful suites',
                       summary['run'])
-        upload = next(step for step in steps('shared-go.yml')
+        upload = next(step for step in document('shared-go.yml')['jobs']['check']['steps']
                       if step.get('uses', '').startswith('actions/upload-artifact@'))
         self.assertEqual(upload['if'], 'always()')
         self.assertEqual(upload['with']['if-no-files-found'], 'error')
         for evidence in ['unit.out', 'integration.out', 'api.out', '*.jsonl',
                          '*.coverage.txt', '*.report.txt']:
             self.assertIn(evidence, upload['with']['path'].splitlines())
+
+    def test_summary_retains_available_reports_and_marks_each_missing_suite(self):
+        command = named('shared-go.yml', 'Coverage summary')['run']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'unit.report.txt').write_text('Total test coverage: 81.0%')
+            summary = root / 'summary.md'
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', command], cwd=root,
+                                    env={**os.environ, 'GITHUB_STEP_SUMMARY': str(summary),
+                                         'GITHUB_SERVER_URL': 'https://github.com',
+                                         'GITHUB_REPOSITORY': 'fin-assist/fixture', 'GITHUB_RUN_ID': '123'},
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = summary.read_text()
+            for level in ('unit', 'integration', 'api', 'combined'):
+                self.assertIn('## ' + level + ' coverage', report)
+            self.assertIn('Total test coverage: 81.0%', report)
+            self.assertEqual(report.count('Coverage unavailable:'), 3)
 
     def test_changelog_uses_pinned_parser_only_for_opted_in_consumers(self):
         with tempfile.TemporaryDirectory() as directory:

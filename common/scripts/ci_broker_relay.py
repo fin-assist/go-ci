@@ -1,6 +1,7 @@
 """Dispatch private CI and relay exact-attempt outcomes without checking out PR code."""
 
 import datetime
+import http.client
 import json
 import os
 from pathlib import Path
@@ -130,7 +131,8 @@ class GitHub:
             if code == 429 or 500 <= code < 600 or (code == 403 and (retry_after or remaining == "0")):
                 raise Transient(f"GitHub API returned HTTP {code}", retry_after) from None
             raise Rejected(f"GitHub API returned HTTP {code}") from None
-        except (urllib.error.URLError, TimeoutError):
+        except (OSError, http.client.HTTPException):
+            # urllib does not wrap getresponse()/read() failures in URLError.
             raise Transient("GitHub API request failed") from None
         if len(data) > MAX_RESPONSE_BYTES:
             raise Rejected("GitHub API response is too large")

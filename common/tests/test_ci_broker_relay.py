@@ -3,10 +3,12 @@
 import datetime
 from contextlib import redirect_stderr, redirect_stdout
 from email.message import Message
+import http.client
 import importlib.util
 import io
 import json
 from pathlib import Path
+import ssl
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -312,15 +314,26 @@ class HTTPAdapterTests(unittest.TestCase):
 
     def test_network_errors_are_transient_and_redact_the_underlying_exception(self):
         for error in (urllib.error.URLError("private-network-sentinel"),
-                      TimeoutError("private-timeout-sentinel")):
-            with self.subTest(error=type(error).__name__):
-                api = relay.GitHub("private-token-sentinel")
-                with patch.object(api.opener, "open", side_effect=error) as opened:
-                    with self.assertRaisesRegex(relay.Transient, "^GitHub API request failed$") as raised:
-                        api.request(self.path)
-                self.assertEqual(opened.call_count, 1)
-                self.assertNotIn("sentinel", str(raised.exception))
-                self.assertIsInstance(raised.exception, relay.Rejected)
+                      TimeoutError("private-timeout-sentinel"),
+                      http.client.RemoteDisconnected("private-disconnect-sentinel"),
+                      ConnectionResetError("private-reset-sentinel"),
+                      ssl.SSLError("private-tls-sentinel"),
+                      http.client.IncompleteRead(b"private-body-sentinel", 100)):
+            for phase in ("open", "read"):
+                with self.subTest(error=type(error).__name__, phase=phase):
+                    api = relay.GitHub("private-token-sentinel")
+                    response = io.BytesIO()
+                    with patch.object(api.opener, "open", return_value=response,
+                                      side_effect=error if phase == "open" else None) as opened, \
+                         patch.object(response, "read", side_effect=error):
+                        with self.assertRaisesRegex(relay.Transient, "^GitHub API request failed$") as raised:
+                            api.request(self.path)
+                    self.assertEqual(opened.call_count, 1)
+                    self.assertNotIn("sentinel", str(raised.exception))
+                    self.assertIsInstance(raised.exception, relay.Rejected)
+                    if phase == "read":
+                        self.assertTrue(response.closed)
+                    response.close()
 
     def test_only_rate_limited_403_and_retryable_http_statuses_are_transient(self):
         cases = ((429, {}, True), (500, {}, True), (503, {}, True),

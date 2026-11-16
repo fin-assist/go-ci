@@ -63,6 +63,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Remove stale bank-bff coverage evidence
+        if: github.repository == 'fin-assist/bank-bff'
+        run: |
+          for level in unit integration api combined; do
+            rm -f "$level.out" "$level.jsonl" "$level.coverage.txt" "$level.report.txt"
+          done
       - name: Match the local source and profile
         env:
           SHARED_PROFILE: ${{ inputs.profile }}
@@ -141,7 +147,130 @@ jobs:
           else
             python3 scripts/changelog.py check
           fi
+      - name: Collect unit statements coverage
+        id: collect_unit
+        if: github.repository == 'fin-assist/bank-bff'
+        continue-on-error: true
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect unit
+          else
+            make collect-unit
+          fi
+      - name: Require 80 percent unit statements coverage
+        id: check_unit
+        if: always() && github.repository == 'fin-assist/bank-bff' && steps.collect_unit.outcome == 'success'
+        continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check unit
+          else
+            make check-unit
+          fi
+      - name: Collect integration statements coverage
+        id: collect_integration
+        if: github.repository == 'fin-assist/bank-bff'
+        continue-on-error: true
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect integration
+          else
+            make collect-integration
+          fi
+      - name: Require 80 percent integration statements coverage
+        id: check_integration
+        if: always() && github.repository == 'fin-assist/bank-bff' && steps.collect_integration.outcome == 'success'
+        continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check integration
+          else
+            make check-integration
+          fi
+      - name: Collect api statements coverage
+        id: collect_api
+        if: github.repository == 'fin-assist/bank-bff'
+        continue-on-error: true
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect api
+          else
+            make collect-api
+          fi
+      - name: Require 80 percent api statements coverage
+        id: check_api
+        if: always() && github.repository == 'fin-assist/bank-bff' && steps.collect_api.outcome == 'success'
+        continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check api
+          else
+            make check-api
+          fi
+      - name: bank-bff combined statements coverage (informational union)
+        if: always() && github.repository == 'fin-assist/bank-bff' && steps.collect_unit.outcome == 'success' && steps.collect_integration.outcome == 'success' && steps.collect_api.outcome == 'success'
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" combined
+          else
+            make cover-combined
+          fi
+      - name: bank-bff coverage summary
+        if: always() && github.repository == 'fin-assist/bank-bff'
+        run: |
+          for level in unit integration api combined; do
+            echo "## $level coverage (Go statements)" >> "$GITHUB_STEP_SUMMARY"
+            if [ -s "$level.report.txt" ]; then
+              echo '```text' >> "$GITHUB_STEP_SUMMARY"
+              cat "$level.report.txt" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo 'Coverage unavailable: suite collection or input validation failed.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo 'Each suite requires total80 independently, with go-test-coverage v2.23.0 rounding. Only the original empty go-library-template reports N/A after successful suites. Combined is informational.' >> "$GITHUB_STEP_SUMMARY"
+          echo "[Coverage artifacts]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always() && github.repository == 'fin-assist/bank-bff'
+        with:
+          name: coverage
+          overwrite: true
+          path: |
+            unit.out
+            integration.out
+            api.out
+            *.jsonl
+            *.coverage.txt
+            *.report.txt
+          if-no-files-found: error
+      # The caller go gate must fail if any sequential suite or threshold failed.
+      - name: Require bank-bff suites and thresholds
+        if: always() && github.repository == 'fin-assist/bank-bff'
+        env:
+          COLLECT_UNIT: ${{ steps.collect_unit.outcome }}
+          CHECK_UNIT: ${{ steps.check_unit.outcome }}
+          COLLECT_INTEGRATION: ${{ steps.collect_integration.outcome }}
+          CHECK_INTEGRATION: ${{ steps.check_integration.outcome }}
+          COLLECT_API: ${{ steps.collect_api.outcome }}
+          CHECK_API: ${{ steps.check_api.outcome }}
+        run: |
+          for outcome in "$COLLECT_UNIT" "$CHECK_UNIT" "$COLLECT_INTEGRATION" "$CHECK_INTEGRATION" "$COLLECT_API" "$CHECK_API"; do
+            if [ "$outcome" != success ]; then
+              echo 'Every suite must execute without skips and independently meet total80.' >&2
+              exit 1
+            fi
+          done
+
   suite:
+    if: github.repository != 'fin-assist/bank-bff'
     name: suite (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -255,7 +384,7 @@ jobs:
   check:
     name: check
     needs: [checks, suite]
-    if: always()
+    if: always() && github.repository != 'fin-assist/bank-bff'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

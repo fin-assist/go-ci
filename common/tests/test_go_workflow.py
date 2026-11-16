@@ -324,17 +324,28 @@ if report is not None:
             self.assertFalse(list(root.iterdir()))
 
     def test_every_collector_and_independent_gate_is_required(self):
-        for title, keys in [('Require all three suites and checks', {'CHECKS', 'SUITES', 'INPUTS'}),
-                            ('Require the suite and its threshold', {'COLLECT', 'THRESHOLD'})]:
+        mappings = {
+            'Require all three suites and checks': {
+                'CHECKS': '${{ needs.checks.result }}',
+                'CHECKS_ATTEMPT': '${{ needs.checks.outputs.run_attempt }}',
+                'SUITES': '${{ needs.suite.result }}',
+                'INPUTS': '${{ steps.coverage_inputs.outcome }}'},
+            'Require the suite and its threshold': {
+                'COLLECT': '${{ steps.collect.outcome }}',
+                'THRESHOLD': '${{ steps.threshold.outcome }}'},
+        }
+        for title, mapping in mappings.items():
             gate = named('shared-go.yml', title)
             self.assertEqual(gate['if'], 'always()')
-            outcomes = {key: 'success' for key in gate['env']}
-            self.assertEqual(set(outcomes), keys)
-            self.assertEqual(run(gate['run'], **outcomes).returncode, 0)
+            self.assertEqual(gate['env'], mapping)
+            outcomes = {key: 'success' for key in mapping if key != 'CHECKS_ATTEMPT'}
+            attempt = {'CHECKS_ATTEMPT': '2', 'GITHUB_RUN_ATTEMPT': '2'}
+            self.assertEqual(run(gate['run'], **outcomes, **attempt).returncode, 0)
             for key in outcomes:
                 for rejected in ['', 'failure', 'skipped', 'cancelled']:
                     with self.subTest(gate=title, outcome=key, rejected=rejected):
-                        self.assertNotEqual(run(gate['run'], **{**outcomes, key: rejected}).returncode, 0)
+                        self.assertNotEqual(run(gate['run'], **{**outcomes, key: rejected},
+                                                **attempt).returncode, 0)
         collect = named('shared-go.yml', 'Collect suite statements coverage')
         check = named('shared-go.yml', 'Require 80 percent suite statements coverage')
         self.assertIs(collect['continue-on-error'], True)
@@ -344,6 +355,19 @@ if report is not None:
             self.assertEqual(step['env']['SUITE'], '${{ matrix.suite }}')
         combined = named('shared-go.yml', 'Combined statements coverage (informational union)')
         self.assertEqual(combined['if'], "always() && steps.coverage_inputs.outcome == 'success'")
+
+    def test_successful_checks_from_another_attempt_cannot_satisfy_the_gate(self):
+        checks = document('shared-go.yml')['jobs']['checks']
+        self.assertEqual(checks['outputs'], {'run_attempt': '${{ github.run_attempt }}'})
+        gate = named('shared-go.yml', 'Require all three suites and checks')['run']
+        outcomes = {'CHECKS': 'success', 'SUITES': 'success', 'INPUTS': 'success',
+                    'GITHUB_RUN_ATTEMPT': '2'}
+        for checks_attempt in ('', '1', '3'):
+            with self.subTest(checks_attempt=checks_attempt):
+                result = run(gate, **outcomes, CHECKS_ATTEMPT=checks_attempt)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Checks must run in this CI attempt', result.stderr)
+        self.assertEqual(run(gate, **outcomes, CHECKS_ATTEMPT='2').returncode, 0)
 
     def test_current_attempt_artifacts_are_required_and_cannot_overwrite_code(self):
         upload = named('shared-go.yml', 'Upload suite coverage evidence')

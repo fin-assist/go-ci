@@ -43,6 +43,8 @@ env:
 jobs:
   checks:
     name: checks
+    outputs:
+      run_attempt: ${{ github.run_attempt }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -383,9 +385,14 @@ jobs:
         if: always()
         env:
           CHECKS: ${{ needs.checks.result }}
+          CHECKS_ATTEMPT: ${{ needs.checks.outputs.run_attempt }}
           SUITES: ${{ needs.suite.result }}
           INPUTS: ${{ steps.coverage_inputs.outcome }}
         run: |
+          if [ "$CHECKS_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+            echo 'Checks must run in this CI attempt; re-run all jobs.' >&2
+            exit 1
+          fi
           for outcome in "$CHECKS" "$SUITES" "$INPUTS"; do
             if [ "$outcome" != success ]; then
               echo 'All checks and all three suites must succeed in this attempt.' >&2

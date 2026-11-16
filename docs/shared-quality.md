@@ -61,17 +61,25 @@ script tests и CHANGELOG проверяются отдельным паралл
 N/A combined возможен только для трёх валидных N/A-профилей исходного библиотечного шаблона.
 
 Финальный `check` запускается с `always()` и требует успеха `checks`, всех matrix jobs и
-восстановления трёх профилей; failure, skipped и cancelled не принимаются. Сводка и общий
+восстановления трёх профилей; failure, skipped и cancelled не принимаются. `checks` передаёт
+номер своей attempt через job output; успешный результат старой попытки также отклоняется. Сводка и общий
 artifact `coverage` сохраняют прежние имена файлов. При повторе он заменяет прежний сводный
 artifact, а отдельные suite artifacts прежних попыток сохраняются для диагностики.
 Неуспешный upload/download также блокирует reusable workflow и consumer `go`.
 
 После частичного повтора нельзя объединять новый профиль с профилями предыдущей попытки.
 Если в текущем attempt отсутствует хотя бы один suite artifact, используйте **Re-run all jobs**.
-Полный повтор также заново выбирает актуальный `go-ci/main` по FIN-516. После merge этого
-изменения пять сервисов получат его без новых pin-PR; для приёмки сравниваются прогоны на
-одинаковых коммитах сервисов: полная длительность CI, сумма времени runner’ов, состав тестов,
-отдельные coverage и публикация по сохранённым consumer checks `go`, `lint`, `image`.
+[Правила GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#behavior-of-reusable-workflows-when-re-running-jobs)
+различают полный повтор и повтор упавших/отдельных jobs: полный заново разрешает branch ref,
+частичный сохраняет исходный SHA reusable workflow. FIN-516 также проверила полный повтор
+на неизменных коммитах `analytics` и `go-worker`; ссылки на обе попытки — в [итоге задачи](https://finassist.youtrack.cloud/issue/FIN-516).
+
+После merge изменение автоматически получают все 15 Go-потребителей, включая девять legacy
+библиотек. До merge проверяются исходный `go-library-template` (N/A) и библиотека с
+`internal/pgtest` на временных ветках с полным SHA source PR: независимые Make targets и
+`cover-combined` должны проходить в разных runner’ах. Приёмка пяти сервисов после merge
+сравнивает прогоны на одинаковых коммитах: полную длительность CI, сумму времени runner’ов,
+состав тестов, отдельные coverage и публикацию по consumer checks `go`, `lint`, `image`.
 
 ## Тонкие совместимые Make targets
 

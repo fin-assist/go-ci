@@ -15,10 +15,11 @@
 Контракт потребителя отвергает строковый/числовой flag и opt-in неизвестного module identity/библиотеки.
 Формат `.finassist-ci.json` и побайтная копия bootstrap не меняются.
 
-Для opt-in workflow делает checkout фиксированного `fin-assist/go-ci` по полному `inputs.revision`,
-без сохранения credentials, и вызывает общий runner напрямую. Local/CI profile и revision должны
-совпадать. PR-код не получает секретов/write token. Имена steps, collect/check outcomes, итоговый required
-`go`, summary и пути coverage artifacts сохраняются. Внешние настройки/защиты эта миграция не меняет.
+Workflow получает точный SHA `fin-assist/go-ci` из `job.workflow_sha` (или совместимого
+`inputs.revision`) без сохранения credentials. Local/CI profile и revision должны совпадать.
+При opt-in вызывается общий runner напрямую; legacy-библиотеки используют свои Make targets.
+PR-код не получает секретов/write token. Итоговый required `go`, summary и пути файлов coverage
+сохраняются. Внешние настройки/защиты эта миграция не меняет.
 
 CLI всегда получает явный корень потребителя:
 
@@ -39,6 +40,38 @@ Inventory и collectors ограничены также процессным tim
 `test` использует максимум из 45 минут и своего положительного timeout +120s.
 Analyzer сохраняет отдельный timeout 600s. Timeout и отмена завершают всю группу процессов,
 включая потомков.
+
+## Параллельные suites (FIN-515)
+
+`shared-go.yml` выполняет unit, integration и API в отдельных jobs одной матрицы
+с `fail-fast: false`. Каждый job получает собственный GitHub-hosted runner, рабочий каталог,
+Go-кэш и PostgreSQL testcontainers. Соседняя ошибка не отменяет остальные suites. Tidy, vet,
+script tests и CHANGELOG проверяются отдельным параллельным job `checks`.
+Все jobs разрешают один и тот же фактический SHA reusable workflow; на PR восстанавливают
+подготовленные приватные входы для этого SHA и head PR. Состав inventory, инструментируемых
+пакетов, `-race`, `-count=1`, пороги и точное N/A-исключение шаблона не меняются.
+
+Каждый suite всегда пытается сохранить имеющиеся файлы `.out`, `.jsonl`, `.coverage.txt` и
+`.report.txt` в отдельный `coverage-suite-<run_id>-<run_attempt>-<suite>`. Финальный `check`
+загружает только артефакты текущего run и attempt; переносит из них только известные имена
+файлов coverage, удаляя прежние файлы checkout. Исходники и исполняемые файлы из этих артефактов
+не восстанавливаются. Объединённый отчёт строит прежний analyzer после проверки всех трёх
+профилей и JSONL. При низком пороге отдельного suite combined остаётся информационным и
+не может сделать итог зелёным. Отсутствующий, пустой или непрошедший suite блокирует `go`.
+N/A combined возможен только для трёх валидных N/A-профилей исходного библиотечного шаблона.
+
+Финальный `check` запускается с `always()` и требует успеха `checks`, всех matrix jobs и
+восстановления трёх профилей; failure, skipped и cancelled не принимаются. Сводка и общий
+artifact `coverage` сохраняют прежние имена файлов. При повторе он заменяет прежний сводный
+artifact, а отдельные suite artifacts прежних попыток сохраняются для диагностики.
+Неуспешный upload/download также блокирует reusable workflow и consumer `go`.
+
+После частичного повтора нельзя объединять новый профиль с профилями предыдущей попытки.
+Если в текущем attempt отсутствует хотя бы один suite artifact, используйте **Re-run all jobs**.
+Полный повтор также заново выбирает актуальный `go-ci/main` по FIN-516. После merge этого
+изменения пять сервисов получат его без новых pin-PR; для приёмки сравниваются прогоны на
+одинаковых коммитах сервисов: полная длительность CI, сумма времени runner’ов, состав тестов,
+отдельные coverage и публикация по сохранённым consumer checks `go`, `lint`, `image`.
 
 ## Тонкие совместимые Make targets
 
@@ -78,8 +111,9 @@ Local bootstrap получает выбранный полный SHA, прове
 Потребителю не нужен ещё один download/execute wrapper. После замены удаляются только дубли
 `check-suite.sh`, `test_suite_inputs.py`, `test_suite_selection.py`, `test_coverage_policy.py`:
 их положительные/отрицательные сценарии перенесены в `common/tests/test_quality.py`.
-Обновляйте source pin, `uses` и `with.revision` вместе после review/merge source по команде владельца.
-Откат возвращает согласованные pins и Make targets; bootstrap остаётся той же проверенной копией.
+После FIN-516 потребители следуют `go-ci/main`: новые source-правки приходят после review/merge
+по команде владельца без обновления pins. Откат общего изменения — revert в `go-ci`;
+старый интерфейс с согласованными `revision` и `uses` остаётся совместимым.
 
 ## Сохранённые гарантии
 
@@ -102,7 +136,7 @@ Local bootstrap получает выбранный полный SHA, прове
 ## CHANGELOG и thin delegates после миграции (FIN-457)
 
 При `quality_runner: true` `shared-go.yml` проверяет CHANGELOG parser из того же
-`.finassist-ci/quality-source`, передавая явный consumer root. При false сохраняется
+`.finassist-ci/<resolved SHA>`, передавая явный consumer root. При false сохраняется
 `python3 scripts/changelog.py check`: существующие сервисные и библиотечные callers не
 переводятся неявно. Оба пути передают ненулевой exit как failure.
 

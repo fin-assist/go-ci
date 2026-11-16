@@ -41,8 +41,8 @@ env:
   SHARED_QUALITY: ${{ inputs.quality_runner }}
 
 jobs:
-  check:
-    name: check
+  checks:
+    name: checks
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -139,71 +139,209 @@ jobs:
           else
             python3 scripts/changelog.py check
           fi
-      - name: Collect unit statements coverage
-        id: collect_unit
-        continue-on-error: true
+  suite:
+    name: suite (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [unit, integration, api]
+    steps:
+      - name: Resolve the shared workflow revision
+        env:
+          RESOLVED_SHA: ${{ inputs.revision || job.workflow_sha }}
         run: |
-          if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect unit
-          else
-            make collect-unit
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'SHARED_REVISION=%s\nFINASSIST_CI_REVISION=%s\n' "$RESOLVED_SHA" "$RESOLVED_SHA" >> "$GITHUB_ENV"
+          printf 'Go CI source: `%s`\n' "$RESOLVED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate shared profile
+        env:
+          SHARED_PROFILE: ${{ inputs.profile }}
+        run: |
+          case "$SHARED_PROFILE" in service|library) ;; *) echo 'Unknown Go CI profile' >&2; exit 1 ;; esac
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Remove stale suite evidence
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: rm -f "$SUITE.out" "$SUITE.jsonl" "$SUITE.coverage.txt" "$SUITE.report.txt"
+      - name: Match the local source and profile
+        env:
+          SHARED_PROFILE: ${{ inputs.profile }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          config = json.load(open('.finassist-ci.json'))
+          if config.get('revision', os.environ['SHARED_REVISION']) != os.environ['SHARED_REVISION'] or config['profile'] != os.environ['SHARED_PROFILE']:
+              raise SystemExit('Local and CI source/profile differ')
+          PY
+      - name: Restore private CI inputs
+        if: github.event_name == 'pull_request'
+        uses: $/.github/actions/restore-private-ci
+        with:
+          branch-mode: ${{ inputs.revision == '' && 'true' || 'false' }}
+          revision: ${{ env.SHARED_REVISION }}
+          run-id: ${{ inputs.private_input_run_id }}
+          artifact-name: ${{ inputs.private_input_artifact }}
+      - name: Checkout private CI source on trusted pushes
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/go-ci
+          ref: ${{ env.SHARED_REVISION }}
+          token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          path: .finassist-ci/${{ env.SHARED_REVISION }}
+          persist-credentials: false
+      - name: Set the canonical go-ci cache origin
+        if: github.event_name == 'push'
+        run: git -C ".finassist-ci/$SHARED_REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Access to private modules
+        env:
+          TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
           fi
-      - name: Require 80 percent unit statements coverage
-        id: check_unit
-        if: always() && steps.collect_unit.outcome == 'success'
+      - name: Collect suite statements coverage
+        id: collect
         continue-on-error: true
         env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          if [ "$SHARED_QUALITY" = true ]; then
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect "$SUITE"
+          else
+            make "collect-$SUITE"
+          fi
+      - name: Require 80 percent suite statements coverage
+        id: threshold
+        if: always() && steps.collect.outcome == 'success'
+        continue-on-error: true
+        env:
+          SUITE: ${{ matrix.suite }}
           GOTOOLCHAIN: auto
         run: |
           if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check unit
+            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check "$SUITE"
           else
-            make check-unit
+            make "check-$SUITE"
           fi
-      - name: Collect integration statements coverage
-        id: collect_integration
-        continue-on-error: true
-        run: |
-          if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect integration
-          else
-            make collect-integration
-          fi
-      - name: Require 80 percent integration statements coverage
-        id: check_integration
-        if: always() && steps.collect_integration.outcome == 'success'
-        continue-on-error: true
+      - name: Upload suite coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-suite-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}
+          path: |
+            ${{ matrix.suite }}.out
+            ${{ matrix.suite }}.jsonl
+            ${{ matrix.suite }}.coverage.txt
+            ${{ matrix.suite }}.report.txt
+          if-no-files-found: error
+      - name: Require the suite and its threshold
+        if: always()
         env:
-          GOTOOLCHAIN: auto
+          COLLECT: ${{ steps.collect.outcome }}
+          THRESHOLD: ${{ steps.threshold.outcome }}
         run: |
-          if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check integration
-          else
-            make check-integration
-          fi
-      - name: Collect api statements coverage
-        id: collect_api
-        continue-on-error: true
-        run: |
-          if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" collect api
-          else
-            make collect-api
-          fi
-      - name: Require 80 percent api statements coverage
-        id: check_api
-        if: always() && steps.collect_api.outcome == 'success'
-        continue-on-error: true
+          test "$COLLECT" = success && test "$THRESHOLD" = success
+  check:
+    name: check
+    needs: [checks, suite]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve the shared workflow revision
         env:
-          GOTOOLCHAIN: auto
+          RESOLVED_SHA: ${{ inputs.revision || job.workflow_sha }}
         run: |
-          if [ "$SHARED_QUALITY" = true ]; then
-            python3 -B .finassist-ci/"$SHARED_REVISION"/common/scripts/quality.py --root "$GITHUB_WORKSPACE" check api
-          else
-            make check-api
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          printf 'SHARED_REVISION=%s\nFINASSIST_CI_REVISION=%s\n' "$RESOLVED_SHA" "$RESOLVED_SHA" >> "$GITHUB_ENV"
+          printf 'Go CI source: `%s`\n' "$RESOLVED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate shared profile
+        env:
+          SHARED_PROFILE: ${{ inputs.profile }}
+        run: |
+          case "$SHARED_PROFILE" in service|library) ;; *) echo 'Unknown Go CI profile' >&2; exit 1 ;; esac
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Match the local source and profile
+        env:
+          SHARED_PROFILE: ${{ inputs.profile }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          config = json.load(open('.finassist-ci.json'))
+          if config.get('revision', os.environ['SHARED_REVISION']) != os.environ['SHARED_REVISION'] or config['profile'] != os.environ['SHARED_PROFILE']:
+              raise SystemExit('Local and CI source/profile differ')
+          PY
+      - name: Restore private CI inputs
+        if: github.event_name == 'pull_request'
+        uses: $/.github/actions/restore-private-ci
+        with:
+          branch-mode: ${{ inputs.revision == '' && 'true' || 'false' }}
+          revision: ${{ env.SHARED_REVISION }}
+          run-id: ${{ inputs.private_input_run_id }}
+          artifact-name: ${{ inputs.private_input_artifact }}
+      - name: Checkout private CI source on trusted pushes
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/go-ci
+          ref: ${{ env.SHARED_REVISION }}
+          token: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+          path: .finassist-ci/${{ env.SHARED_REVISION }}
+          persist-credentials: false
+      - name: Set the canonical go-ci cache origin
+        if: github.event_name == 'push'
+        run: git -C ".finassist-ci/$SHARED_REVISION" remote set-url origin https://github.com/fin-assist/go-ci.git
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Access to private modules
+        env:
+          TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
           fi
+      - name: Download this attempt's suite evidence
+        if: always()
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: coverage-suite-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/finassist-coverage
+      - name: Require and stage all three suite profiles
+        id: coverage_inputs
+        if: always()
+        run: |
+          status=0
+          for level in unit integration api; do
+            directory="$RUNNER_TEMP/finassist-coverage/coverage-suite-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$level"
+            for suffix in out jsonl coverage.txt report.txt; do
+              # Never use checked-in evidence or let an artifact overwrite executable code.
+              rm -f "$level.$suffix"
+              if [ -f "$directory/$level.$suffix" ]; then
+                cp "$directory/$level.$suffix" "$level.$suffix"
+              fi
+            done
+            if [ ! -s "$level.out" ] || [ ! -s "$level.jsonl" ]; then
+              echo "Missing $level evidence for this CI attempt; re-run all jobs." >&2
+              status=1
+            fi
+          done
+          rm -f combined.report.txt combined.coverage.txt
+          exit "$status"
       - name: Combined statements coverage (informational union)
-        if: always() && steps.collect_unit.outcome == 'success' && steps.collect_integration.outcome == 'success' && steps.collect_api.outcome == 'success'
+        if: always() && steps.coverage_inputs.outcome == 'success'
         env:
           GOTOOLCHAIN: auto
         run: |
@@ -231,6 +369,7 @@ jobs:
         if: always()
         with:
           name: coverage
+          overwrite: true
           path: |
             unit.out
             integration.out
@@ -239,21 +378,17 @@ jobs:
             *.coverage.txt
             *.report.txt
           if-no-files-found: error
-      # Keep the existing required status check: low coverage cannot hide behind a green go job.
-      - name: Require all three suites and thresholds
+      # The caller's existing required go check depends on the whole reusable workflow.
+      - name: Require all three suites and checks
         if: always()
         env:
-          COLLECT_UNIT: ${{ steps.collect_unit.outcome }}
-          CHECK_UNIT: ${{ steps.check_unit.outcome }}
-          COLLECT_INTEGRATION: ${{ steps.collect_integration.outcome }}
-          CHECK_INTEGRATION: ${{ steps.check_integration.outcome }}
-          COLLECT_API: ${{ steps.collect_api.outcome }}
-          CHECK_API: ${{ steps.check_api.outcome }}
+          CHECKS: ${{ needs.checks.result }}
+          SUITES: ${{ needs.suite.result }}
+          INPUTS: ${{ steps.coverage_inputs.outcome }}
         run: |
-          for outcome in "$COLLECT_UNIT" "$CHECK_UNIT" "$COLLECT_INTEGRATION" "$CHECK_INTEGRATION" "$COLLECT_API" "$CHECK_API"; do
+          for outcome in "$CHECKS" "$SUITES" "$INPUTS"; do
             if [ "$outcome" != success ]; then
-              echo 'Every suite must execute without skips and independently meet total80.' >&2
+              echo 'All checks and all three suites must succeed in this attempt.' >&2
               exit 1
             fi
           done
-

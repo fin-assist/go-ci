@@ -66,6 +66,8 @@ Qase нельзя заменить успешными go/lint/image или оп�
 сводке, затем завершает job ошибкой. Поэтому повтор упавших jobs, которым
 пользуется Renovate, заново запускает relay и получает результат новой попытки.
 Если упал только wrapper после успешного relay, запустите **Re-run all jobs**.
+Автоматический retry такого wrapper не получает новой попытки relay: guard остаётся
+красным, Renovate сохраняет потраченный retry без merge, закрытия или нового комментария.
 Renovate распознаёт relay по `referenced_workflows` source run и принимает только
 facades его текущей попытки. Это не позволяет использовать прежний зелёный wrapper
 после частичного rerun relay. Штатный failed-jobs retry повторяет relay и все красные
@@ -155,8 +157,10 @@ Source PR, infra PR и миграция caller проходят отдельны
 ## Порядок FIN-524
 
 Сначала infra принимает прежние восемь полей dispatch как mode service и новый закрытый
-mode/Qase payload. Затем обновляется go-ci, затем каждый caller. Это сохраняет работу
-существующего template и ещё не переведённых сервисов между merge. В relayed caller
+mode/Qase payload. Затем обновляется go-ci, затем каждый caller. Обычный service relay
+продолжает отправлять ровно прежние восемь полей, поэтому template работает и со старым
+broker при другом порядке merge или откате infra. Только Qase отправляет десять полей
+и требует обновлённый infra. В relayed caller
 не оставляют старый source producer или publisher. Для каждого сервиса нужны PR CI,
 реальный Renovate reconcile, приватная публикация из прошедшего CI и изолированный
 stage по digest; локальные contract/runtime fixtures не заменяют эту приёмку.

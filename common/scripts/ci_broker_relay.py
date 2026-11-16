@@ -265,8 +265,12 @@ def relay(api, inputs, *, clock=time.monotonic, sleep=time.sleep, now=None):
     query = urllib.parse.urlencode({"event": "workflow_dispatch", "branch": BROKER_REF,
                                    "created": f">={earliest}"})
     workflow = f"/repos/{BROKER_REPOSITORY}/actions/workflows/{BROKER_WORKFLOW}"
+    # Keep ordinary CI compatible with brokers that only declare the original
+    # eight inputs, including an infra rollback. Qase alone needs the new mode.
+    dispatch_inputs = {key: value for key, value in inputs.items()
+                       if inputs["mode"] != "service" or key not in ("mode", "qase90_revisions")}
     # Dispatch is deliberately not retried: a lost response must not launch duplicate CI.
-    api.request(workflow + "/dispatches", {"ref": BROKER_REF, "inputs": inputs})
+    api.request(workflow + "/dispatches", {"ref": BROKER_REF, "inputs": dispatch_inputs})
     while clock() < deadline:
         delay = POLL_SECONDS
         try:

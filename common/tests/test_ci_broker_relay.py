@@ -238,11 +238,35 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(result["accepted"], "true")
         self.assertEqual(result["source_run_attempt"], "2")
         self.assertEqual(calls[0], ("/repos/fin-assist/infra/actions/workflows/service-ci.yml/dispatches",
-                                   {"ref": "main", "inputs": inputs}))
+                                   {"ref": "main", "inputs": {
+                                       "source_repository": "fin-assist/go-service-template",
+                                       "source_run_id": "123", "source_run_attempt": "2", "source_sha": SHA,
+                                       "source_head_sha": HEAD, "source_base_sha": BASE,
+                                       "source_pr_number": "42", "go_ci_sha": SOURCE}}))
         self.assertEqual(sum(path.endswith("/dispatches") for path, _ in calls), 1)
         self.assertEqual(calls[-1], ("/repos/fin-assist/infra/actions/runs/999/attempts/1/jobs", "jobs"))
         self.assertIn("branch=main", calls[1][0])
         self.assertIn("created=", calls[1][0])
+
+    def test_qase_dispatch_adds_only_the_two_bounded_mode_inputs(self):
+        inputs = relay.request_inputs(environment() | {
+            "GITHUB_REPOSITORY": "fin-assist/bank-bff", "SOURCE_HEAD_REPOSITORY": "fin-assist/bank-bff",
+            "CI_BROKER_MODE": "qase90", "QASE90_REVISIONS": json.dumps({"bsd": HEAD, "analytics": BASE})})
+        calls = []
+
+        class API:
+            def request(self, path, body=None): calls.append((path, body))
+            def pages(self, path, key):
+                if key == "jobs": return [dict(completed_jobs()[0], name="qase90")]
+                return [completed_run(inputs)]
+
+        self.assertEqual(relay.relay(API(), inputs)["accepted"], "true")
+        self.assertEqual(calls, [("/repos/fin-assist/infra/actions/workflows/service-ci.yml/dispatches",
+            {"ref": "main", "inputs": {
+                "source_repository": "fin-assist/bank-bff", "source_run_id": "123", "source_run_attempt": "2",
+                "source_sha": SHA, "source_head_sha": HEAD, "source_base_sha": BASE, "source_pr_number": "42",
+                "go_ci_sha": SOURCE, "mode": "qase90",
+                "qase90_revisions": json.dumps({"analytics": BASE, "bsd": HEAD}, separators=(",", ":"))}})])
 
     def test_timeout_does_not_redispatch_or_use_an_old_attempt(self):
         inputs, ticks = relay.request_inputs(environment()), [0]

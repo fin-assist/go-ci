@@ -222,6 +222,33 @@ class MultiWorkflowControllerTests(unittest.TestCase):
                     self.assertEqual(api.receipts, {})
                     self.assertNotIn('actions/runs/1/attempts/1/jobs', api.job_paths)
 
+    def test_only_failed_facade_retry_needs_manual_full_rerun(self):
+        for bff in (False, True):
+            with self.subTest(bff=bff):
+                api = self.service_relay(bff)
+                api.runs['ci.yml']['conclusion'] = 'failure'
+                api.jobs_by_workflow['ci.yml'][0]['conclusion'] = 'failure'
+                # Relay and other facades succeeded; GitHub retries only the
+                # failed facade, whose current-attempt guard then fails closed.
+                previous_jobs = copy.deepcopy(api.jobs_by_workflow['ci.yml'])
+                reconcile(api, api.config)
+                self.assertEqual(api.reruns(), ['actions/runs/1/rerun-failed-jobs'])
+                actions, receipts, comments = copy.deepcopy((api.actions, api.receipts, api.comments))
+                api.runs['ci.yml']['run_attempt'] = 2
+                api.jobs_by_workflow['ci.yml'] = [previous_jobs[0]]
+                original = api.pages
+
+                def pages(path, key=None):
+                    if path == 'actions/runs/1/attempts/1/jobs': return previous_jobs
+                    return original(path, key)
+
+                api.pages = pages
+                api.job_paths.clear()
+                reconcile(api, api.config)
+                self.assertEqual((api.actions, api.receipts, api.comments), (actions, receipts, comments))
+                self.assertEqual(api.pr['state'], 'open')
+                self.assertNotIn('actions/runs/1/attempts/1/jobs', api.job_paths)
+
     def test_policy_failure_with_green_main_retries_policy_then_closes(self):
         api = MultiWorkflowFake()
         api.outcome('renovate-policy-tests.yml', 'failure')

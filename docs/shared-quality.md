@@ -74,8 +74,18 @@ artifact, а отдельные suite artifacts прежних попыток с
 частичный сохраняет исходный SHA reusable workflow. FIN-516 также проверила полный повтор
 на неизменных коммитах `analytics` и `go-worker`; ссылки на обе попытки — в [итоге задачи](https://finassist.youtrack.cloud/issue/FIN-516).
 
-После merge изменение автоматически получают все 15 Go-потребителей, включая девять legacy
-библиотек. До merge проверяются исходный `go-library-template` (N/A) и библиотека с
+Исключение по решению владельца — ровно `fin-assist/bank-bff`: существующий `checks` job
+выполняет unit, integration и API последовательно, после общих проверок. Отдельные matrix
+и aggregate jobs пропускаются. Каждый collector и total80 остаётся обязательным; ошибка
+одного уровня не мешает попытке выполнить следующие. Combined строится только после
+успешного сбора всех трёх suites и не заменяет независимые пороги. Прежние файлы coverage
+удаляются после checkout; summary и общий artifact `coverage` сохраняются даже при ошибке.
+Все suites живут в одном runner и повторяются вместе с этим job, поэтому для bank-bff
+нет переноса suite evidence между jobs или смешивания разных attempts. Caller остаётся
+на `@main`, private inputs привязаны к фактическому SHA этого reusable workflow.
+
+При исходном rollout FIN-515 изменение автоматически получили все 15 Go-потребителей,
+включая девять legacy-библиотек. До merge проверяются исходный `go-library-template` (N/A) и библиотека с
 `internal/pgtest` на временных ветках с полным SHA source PR: независимые Make targets и
 `cover-combined` должны проходить в разных runner’ах. Приёмка пяти сервисов после merge
 сравнивает прогоны на одинаковых коммитах: полную длительность CI, сумму времени runner’ов,

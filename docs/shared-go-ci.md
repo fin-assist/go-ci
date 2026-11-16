@@ -103,6 +103,12 @@ FIN-515: unit, integration и API выполняются параллельно 
 между jobs только артефактами текущей попытки. При частичном повторе без всех трёх профилей
 CI требует **Re-run all jobs**; детали и формат artifacts — в [shared-quality.md](shared-quality.md).
 
+По решению владельца `fin-assist/bank-bff` использует последовательное выполнение
+unit → integration → API в существующем `checks` job, после tidy/vet/script/CHANGELOG.
+Matrix и отдельный aggregate job для него пропускаются; каждый total80, combined,
+summary и artifact `coverage` сохраняются. Это исключение по точному repository identity,
+без нового caller input или отката source SHA; остальные потребители сохраняют параллелизм.
+
 Go unit/integration/API независимо сохраняют total80 всего production-знаменателя, PG18, race/count1, таймауты, inventory тестов, валидацию непустых выполненных suites и coverage artifacts. Combined не компенсирует провал уровня. У сервисов не появляется библиотечное исключение `internal/pgtest`; у библиотек исключается только точный пакет `<module>/internal/pgtest`, сами его тесты выполняются. N/A остаётся ограниченным фиксированной identity исходного `go-library-template`. Ни новый репозиторий с прежним module path, ни параметр профиля не наследуют это разрешение.
 
 Компилятор тестов берётся из `go.mod`: `setup-go` сохраняет `GOTOOLCHAIN=local` для inventory и collectors. Закреплённые анализаторы coverage/gorelease и script fixtures запускаются отдельно с `GOTOOLCHAIN=auto`, поскольку их минимальная версия Go может быть выше версии проекта. Это не меняет компилятор production-кода и не снижает пороги.

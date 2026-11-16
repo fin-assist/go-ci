@@ -290,7 +290,8 @@ if report is not None:
         self.assertNotIn('needs', suite)
         self.assertNotIn('needs', jobs['checks'])
         self.assertEqual(jobs['check']['needs'], ['checks', 'suite'])
-        self.assertEqual(jobs['check']['if'], 'always()')
+        self.assertEqual(suite['if'], "github.repository != 'fin-assist/bank-bff'")
+        self.assertEqual(jobs['check']['if'], "always() && github.repository != 'fin-assist/bank-bff'")
         for job in jobs.values():
             self.assertEqual(job['runs-on'], 'ubuntu-latest')
             self.assertGreater(job['timeout-minutes'], 0)
@@ -323,6 +324,58 @@ if report is not None:
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(list(root.iterdir()))
 
+    def test_only_bank_bff_collects_three_suites_sequentially_in_the_existing_checks_job(self):
+        jobs = document('shared-go.yml')['jobs']
+        checks = jobs['checks']['steps']
+        guard = "github.repository == 'fin-assist/bank-bff'"
+        collect_ids = []
+        previous = checks.index(named('shared-go.yml', 'CHANGELOG.md format'))
+        for level in ('unit', 'integration', 'api'):
+            collect = named('shared-go.yml', f'Collect {level} statements coverage')
+            threshold = named('shared-go.yml', f'Require 80 percent {level} statements coverage')
+            self.assertEqual(collect['if'], guard)
+            self.assertEqual(threshold['if'], f"always() && {guard} && steps.collect_{level}.outcome == 'success'")
+            self.assertIs(collect['continue-on-error'], True)
+            self.assertIs(threshold['continue-on-error'], True)
+            self.assertNotIn('GOTOOLCHAIN', collect.get('env', {}))
+            self.assertEqual(threshold['env']['GOTOOLCHAIN'], 'auto')
+            self.assertLess(previous, checks.index(collect))
+            self.assertLess(checks.index(collect), checks.index(threshold))
+            previous = checks.index(threshold)
+            collect_ids.append(collect['id'])
+        combined = named('shared-go.yml', 'bank-bff combined statements coverage (informational union)')
+        self.assertEqual(combined['if'], ' && '.join(['always()', guard] +
+                         [f"steps.{identifier}.outcome == 'success'" for identifier in collect_ids]))
+        self.assertLess(previous, checks.index(combined))
+        self.assertNotIn('needs', jobs['checks'])
+        self.assertFalse(any(step.get('uses', '').startswith('actions/download-artifact@') for step in checks))
+        summary = named('shared-go.yml', 'bank-bff coverage summary')
+        upload = next(step for step in checks if step.get('uses', '').startswith('actions/upload-artifact@'))
+        self.assertEqual(summary['if'], 'always() && ' + guard)
+        self.assertEqual(upload['if'], 'always() && ' + guard)
+        parallel_upload = next(step for step in jobs['check']['steps']
+                               if step.get('uses', '').startswith('actions/upload-artifact@'))
+        self.assertEqual(upload['with'], parallel_upload['with'])
+        self.assertEqual(summary['run'], named('shared-go.yml', 'Coverage summary')['run'])
+
+    def test_bank_bff_cleans_old_evidence_before_any_validation_or_collection(self):
+        checks = document('shared-go.yml')['jobs']['checks']['steps']
+        clean = named('shared-go.yml', 'Remove stale bank-bff coverage evidence')
+        self.assertEqual(clean['if'], "github.repository == 'fin-assist/bank-bff'")
+        checkout = next(step for step in checks if step.get('uses', '').startswith('actions/checkout@'))
+        self.assertLess(checks.index(checkout), checks.index(clean))
+        self.assertLess(checks.index(clean), checks.index(named('shared-go.yml', 'Match the local source and profile')))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for level in ('unit', 'integration', 'api', 'combined'):
+                for suffix in ('out', 'jsonl', 'coverage.txt', 'report.txt'):
+                    (root / f'{level}.{suffix}').write_text('stale evidence')
+            (root / 'keep.go').write_text('package fixture\n')
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', clean['run']], cwd=root,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([path.name for path in root.iterdir()], ['keep.go'])
+
     def test_every_collector_and_independent_gate_is_required(self):
         mappings = {
             'Require all three suites and checks': {
@@ -333,10 +386,18 @@ if report is not None:
             'Require the suite and its threshold': {
                 'COLLECT': '${{ steps.collect.outcome }}',
                 'THRESHOLD': '${{ steps.threshold.outcome }}'},
+            'Require bank-bff suites and thresholds': {
+                'COLLECT_UNIT': '${{ steps.collect_unit.outcome }}',
+                'CHECK_UNIT': '${{ steps.check_unit.outcome }}',
+                'COLLECT_INTEGRATION': '${{ steps.collect_integration.outcome }}',
+                'CHECK_INTEGRATION': '${{ steps.check_integration.outcome }}',
+                'COLLECT_API': '${{ steps.collect_api.outcome }}',
+                'CHECK_API': '${{ steps.check_api.outcome }}'},
         }
         for title, mapping in mappings.items():
             gate = named('shared-go.yml', title)
-            self.assertEqual(gate['if'], 'always()')
+            condition = "always() && github.repository == 'fin-assist/bank-bff'" if 'bank-bff' in title else 'always()'
+            self.assertEqual(gate['if'], condition)
             self.assertEqual(gate['env'], mapping)
             outcomes = {key: 'success' for key in mapping if key != 'CHECKS_ATTEMPT'}
             attempt = {'CHECKS_ATTEMPT': '2', 'GITHUB_RUN_ATTEMPT': '2'}
@@ -442,9 +503,12 @@ if report is not None:
     def test_quality_and_legacy_branches_execute_only_the_selected_runner_and_propagate_failure(self):
         self.assertNotIn('All tests belong to a suite', [step.get('name') for step in steps('shared-go.yml')])
         routes = [('Combined statements coverage (informational union)', ['combined'], ['cover-combined'], '')]
+        routes.append(('bank-bff combined statements coverage (informational union)', ['combined'], ['cover-combined'], ''))
         for level in ['unit', 'integration', 'api']:
             routes += [('Collect suite statements coverage', ['collect', level], ['collect-' + level], level),
-                       ('Require 80 percent suite statements coverage', ['check', level], ['check-' + level], level)]
+                       ('Require 80 percent suite statements coverage', ['check', level], ['check-' + level], level),
+                       (f'Collect {level} statements coverage', ['collect', level], ['collect-' + level], ''),
+                       (f'Require 80 percent {level} statements coverage', ['check', level], ['check-' + level], '')]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for command in ['python3', 'make']:

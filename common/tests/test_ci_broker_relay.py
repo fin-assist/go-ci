@@ -51,6 +51,29 @@ def completed_jobs():
              "status": "completed", "conclusion": "success"} for gate in relay.GATES]
 
 
+class MemoryResponse(io.BytesIO):
+    """Minimal successful opener response, including HTTP header access."""
+
+    def __init__(self, body=b"", headers=None):
+        super().__init__(body)
+        self.headers = headers or {}
+
+
+def http_response(body, *, declared_length=None, status=200):
+    """Parse a real HTTP response from socket bytes, without a network socket."""
+    length = str(len(body)) if declared_length is None else str(declared_length)
+    wire = (f"HTTP/1.1 {status} Fixture\r\nContent-Length: {length}\r\n"
+            "Connection: close\r\n\r\n").encode() + body
+
+    class Socket:
+        def makefile(self, *args, **kwargs):
+            return io.BytesIO(wire)
+
+    response = http.client.HTTPResponse(Socket())
+    response.begin()
+    return response
+
+
 class MemoryHTTPS(urllib.request.BaseHandler):
     """Feed a real urllib opener without making a network connection."""
 
@@ -259,7 +282,7 @@ class HTTPAdapterTests(unittest.TestCase):
         self.assertNotIn("sentinel", str(raised.exception))
 
     def test_response_byte_limit_reads_only_one_extra_byte_and_accepts_exact_limit(self):
-        class Response(io.BytesIO):
+        class Response(MemoryResponse):
             def __init__(self, payload):
                 super().__init__(payload)
                 self.read_sizes = []
@@ -281,6 +304,58 @@ class HTTPAdapterTests(unittest.TestCase):
                         with self.assertRaisesRegex(relay.Rejected, "^GitHub API response is too large$"):
                             api.request(self.path)
                 self.assertEqual(response.read_sizes, [33])
+                self.assertTrue(response.closed)
+
+    def test_real_http_response_accepts_exact_length_and_empty_204(self):
+        for status, payload, expected in ((200, b'{"ok":true}'.ljust(32, b" "), {"ok": True}),
+                                          (204, b"", None)):
+            with self.subTest(status=status):
+                api = relay.GitHub("fixture-token")
+                response = http_response(payload, status=status)
+                with patch.object(relay, "MAX_RESPONSE_BYTES", 32), \
+                     patch.object(api.opener, "open", return_value=response):
+                    self.assertEqual(api.request(self.path), expected)
+                self.assertTrue(response.closed)
+
+    def test_real_http_response_short_body_is_transient_before_json_or_empty_success(self):
+        for payload in (b'{"private-body-sentinel":', b'{"ok":true}', b""):
+            with self.subTest(payload=payload):
+                # Sized read() really returns short bytes at EOF without IncompleteRead.
+                with http_response(payload, declared_length=100) as probe:
+                    self.assertEqual(probe.read(101), payload)
+                api = relay.GitHub("private-token-sentinel")
+                response = http_response(payload, declared_length=100)
+                with patch.object(api.opener, "open", return_value=response), \
+                     patch.object(relay.json, "loads", side_effect=AssertionError("short body must not reach JSON")):
+                    with self.assertRaises(relay.Transient) as raised:
+                        api.request(self.path)
+                self.assertNotIn("sentinel", str(raised.exception))
+                self.assertTrue(response.closed)
+
+    def test_real_http_response_declared_oversize_is_rejected_before_reading(self):
+        api = relay.GitHub("fixture-token")
+        response = http_response(b'{"ok":true}', declared_length=33)
+        with patch.object(relay, "MAX_RESPONSE_BYTES", 32), \
+             patch.object(api.opener, "open", return_value=response), \
+             patch.object(response, "read", wraps=response.read) as read:
+            with self.assertRaisesRegex(relay.Rejected, "^GitHub API response is too large$") as raised:
+                api.request(self.path)
+        self.assertNotIsInstance(raised.exception, relay.Transient)
+        read.assert_not_called()
+        self.assertTrue(response.closed)
+
+    def test_real_http_response_invalid_content_length_is_terminal_without_body_read(self):
+        for length in ("private-length-sentinel", "-1", "1.5", ""):
+            with self.subTest(length=length):
+                api = relay.GitHub("fixture-token")
+                response = http_response(b'{"ok":true}', declared_length=length)
+                with patch.object(api.opener, "open", return_value=response), \
+                     patch.object(response, "read", wraps=response.read) as read:
+                    with self.assertRaises(relay.Rejected) as raised:
+                        api.request(self.path)
+                self.assertNotIsInstance(raised.exception, relay.Transient)
+                self.assertNotIn("sentinel", str(raised.exception))
+                read.assert_not_called()
                 self.assertTrue(response.closed)
 
     def test_invalid_json_utf8_and_nonobject_payloads_fail_without_echoing_content(self):
@@ -322,7 +397,7 @@ class HTTPAdapterTests(unittest.TestCase):
             for phase in ("open", "read"):
                 with self.subTest(error=type(error).__name__, phase=phase):
                     api = relay.GitHub("private-token-sentinel")
-                    response = io.BytesIO()
+                    response = MemoryResponse()
                     with patch.object(api.opener, "open", return_value=response,
                                       side_effect=error if phase == "open" else None) as opened, \
                          patch.object(response, "read", side_effect=error):
@@ -365,7 +440,7 @@ class HTTPAdapterTests(unittest.TestCase):
 
                 def opened(request, *, timeout):
                     ticks[0] += 5 if expired else 3
-                    return io.BytesIO(json.dumps(next(responses)).encode())
+                    return MemoryResponse(json.dumps(next(responses)).encode())
 
                 with patch.object(api.opener, "open", side_effect=opened) as opening:
                     if expired:
@@ -380,6 +455,41 @@ class HTTPAdapterTests(unittest.TestCase):
 
 
 class RetryTests(unittest.TestCase):
+    def test_real_short_get_response_is_retried_after_exactly_one_dispatch(self):
+        inputs, ticks, sleeps = relay.request_inputs(environment()), [0], []
+        api = relay.GitHub("fixture-token")
+        responses = [http_response(b"", status=204),
+                     http_response(b'{"workflow_runs":', declared_length=100),
+                     http_response(json.dumps({"workflow_runs": [completed_run(inputs)]}).encode()),
+                     http_response(json.dumps({"jobs": completed_jobs()}).encode())]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            ticks[0] += seconds
+
+        with patch.object(api.opener, "open", side_effect=responses) as opened:
+            result = relay.relay(api, inputs, clock=lambda: ticks[0], sleep=sleep)
+        self.assertEqual(result["accepted"], "true")
+        requests = [call.args[0] for call in opened.call_args_list]
+        self.assertEqual([request.get_method() for request in requests], ["POST", "GET", "GET", "GET"])
+        self.assertTrue(requests[0].full_url.endswith("/service-ci.yml/dispatches"))
+        self.assertEqual(requests[1].full_url, requests[2].full_url)
+        self.assertIn("/runs/999/attempts/1/jobs?", requests[3].full_url)
+        self.assertEqual(sleeps, [relay.POLL_SECONDS])
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_real_short_dispatch_response_is_not_repeated(self):
+        api = relay.GitHub("fixture-token")
+        response = http_response(b"", declared_length=100)
+        with patch.object(api.opener, "open", return_value=response) as opened, \
+             patch.object(relay.time, "sleep") as sleep:
+            with self.assertRaises(relay.Transient):
+                relay.relay(api, relay.request_inputs(environment()), sleep=sleep)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(opened.call_args.args[0].get_method(), "POST")
+        sleep.assert_not_called()
+        self.assertTrue(response.closed)
+
     def test_relay_installs_one_deadline_covering_dispatch_discovery_and_jobs(self):
         inputs, ticks = relay.request_inputs(environment()), [100]
         api = relay.GitHub("fixture-token")
@@ -389,7 +499,7 @@ class RetryTests(unittest.TestCase):
         def opened(request, *, timeout):
             ticks[0] += 5
             response = next(responses)
-            return io.BytesIO(b"" if response is None else json.dumps(response).encode())
+            return MemoryResponse(b"" if response is None else json.dumps(response).encode())
 
         with patch.object(relay, "TIMEOUT_SECONDS", 25), \
              patch.object(api.opener, "open", side_effect=opened) as opening:

@@ -121,7 +121,17 @@ class GitHub:
         )
         try:
             with self.opener.open(request, timeout=timeout) as response:
+                expected = response.headers.get("Content-Length")
+                if expected is not None:
+                    if not re.fullmatch(r"[0-9]{1,10}", expected):
+                        raise Rejected("GitHub API returned invalid Content-Length")
+                    expected = int(expected)
+                    if expected > MAX_RESPONSE_BYTES:
+                        raise Rejected("GitHub API response is too large")
                 data = response.read(MAX_RESPONSE_BYTES + 1)
+                # HTTPResponse.read(amt) can return a short body without raising.
+                if expected is not None and len(data) < expected:
+                    raise Transient("GitHub API response ended before its declared length")
         except urllib.error.HTTPError as error:
             code = error.code
             retry = error.headers.get("Retry-After", "") if error.headers else ""

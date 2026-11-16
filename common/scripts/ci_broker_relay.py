@@ -255,6 +255,8 @@ def main():
             summary.write(f"Private CI: [{result['broker_run_id']}]({result['broker_url']})\n\n")
             summary.write(f"Go CI source: `{inputs['go_ci_sha']}`\n\n")
             summary.write(" | ".join(f"{gate}: {result[gate]}" for gate in GATES) + "\n")
+        if result["accepted"] != "true":
+            raise Rejected("Private CI did not pass all required gates")
     except Rejected as error:
         raise SystemExit(str(error)) from None
 

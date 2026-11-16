@@ -63,7 +63,14 @@ if (existsSync(manifestPath) && revision === undefined) {
   const content = readFileSync(resolve(root, file), 'utf8');
   const extracted = (await extractPackageFile(content, file))?.deps ?? [];
   const shared = extracted.filter(dep => dep.packageName === 'fin-assist/go-ci' || dep.depName === 'fin-assist/go-ci');
-  assert.ok(shared.length >= 3, 'All branch-backed shared workflows must be visible to the Actions manager');
+  const module = readFileSync(resolve(root, 'go.mod'), 'utf8').match(/^module[ \t]+(\S+)[ \t]*$/m)?.[1];
+  const relay = 'fin-assist/go-ci/.github/workflows/shared-remote-ci.yml@main';
+  const workflowRefs = [...content.matchAll(/^[ \t]*uses:[ \t]+([^\s#]+)/gm)].map(match => match[1]);
+  if (module === 'github.com/fin-assist/go-service-template' && workflowRefs.includes(relay)) {
+    assert.equal(shared.length, 1, 'The template relay must be visible to the Actions manager');
+  } else {
+    assert.ok(shared.length >= 3, 'All branch-backed shared workflows must be visible to the Actions manager');
+  }
   for (const dep of shared) {
     normalizeDepNames(dep);
     assert.equal(dep.currentValue, 'main');

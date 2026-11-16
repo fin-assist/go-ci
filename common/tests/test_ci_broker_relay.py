@@ -620,6 +620,38 @@ class MainTests(unittest.TestCase):
                              "go: success | lint: success | image: success | migrations: success\n")
             self.assertNotIn("sentinel", output.read_text() + summary.read_text())
 
+    def test_main_failed_gate_exits_nonzero_after_preserving_outputs_and_summary(self):
+        inputs = relay.request_inputs(environment())
+        jobs = completed_jobs()
+        jobs[0]["conclusion"] = "failure"
+        run = completed_run(inputs) | {"conclusion": "failure"}
+        responses = [http_response(b"", status=204),
+                     http_response(json.dumps({"workflow_runs": [run]}).encode()),
+                     http_response(json.dumps({"jobs": jobs}).encode())]
+        with tempfile.TemporaryDirectory() as tmp:
+            output, summary = Path(tmp) / "output", Path(tmp) / "summary"
+            output.write_text("existing=output\n")
+            summary.write_text("Existing summary\n")
+            env = environment() | {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
+                                   "CI_BROKER_TOKEN": "private-dispatch-sentinel"}
+            with patch.dict(relay.os.environ, env, clear=True), \
+                 patch.object(urllib.request.OpenerDirector, "open", side_effect=responses) as opened:
+                with self.assertRaises(SystemExit) as raised:
+                    relay.main()
+            self.assertNotIn(raised.exception.code, (None, 0))
+            self.assertEqual([call.args[0].get_method() for call in opened.call_args_list],
+                             ["POST", "GET", "GET"])
+            self.assertEqual(output.read_text(), "existing=output\n"
+                             "go=failure\nlint=success\nimage=success\nmigrations=success\n"
+                             "accepted=false\nsource_run_attempt=2\nbroker_run_id=999\n"
+                             "broker_url=https://github.com/fin-assist/infra/actions/runs/999\n")
+            self.assertEqual(summary.read_text(), "Existing summary\n"
+                             "Private CI: [999](https://github.com/fin-assist/infra/actions/runs/999)\n\n"
+                             f"Go CI source: `{SOURCE}`\n\n"
+                             "go: failure | lint: success | image: success | migrations: success\n")
+            self.assertNotIn("sentinel", str(raised.exception.code) + output.read_text() + summary.read_text())
+        self.assertTrue(all(response.closed for response in responses))
+
     def test_main_rejects_with_redacted_system_exit_and_no_partial_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             output, summary = Path(tmp) / "output", Path(tmp) / "summary"

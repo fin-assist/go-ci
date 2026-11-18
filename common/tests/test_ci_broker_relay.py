@@ -91,6 +91,7 @@ class ConcurrencyTests(unittest.TestCase):
                 pr_groups.append(group)
                 self.assertEqual(resolve(run=124, attempt=2), (group, True))
                 self.assertNotEqual(resolve(pr=43)[0], group)
+                self.assertNotEqual(self.resolve(scope, workflow=name + " other")[0], group)
                 push, cancel = resolve(event="push", pr="")
                 self.assertFalse(cancel)
                 self.assertEqual(len({group, push, resolve(event="push", run=124, pr="")[0],

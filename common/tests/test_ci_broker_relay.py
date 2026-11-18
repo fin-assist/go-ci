@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import ssl
 import tempfile
 import unittest
@@ -49,6 +50,53 @@ def completed_run(inputs):
 def completed_jobs():
     return [{"name": gate, "run_id": 999, "run_attempt": 1, "head_sha": BROKER_SHA,
              "status": "completed", "conclusion": "success"} for gate in relay.GATES]
+
+
+class ConcurrencyTests(unittest.TestCase):
+    def resolve(self, config, *, workflow="CI", mode="service", event="pull_request", pr=42, run=123, attempt=1):
+        values = {"github.workflow": workflow, "inputs.mode": mode, "github.event.pull_request.number": pr,
+                  "github.run_id": run, "github.run_attempt": attempt}
+        # Evaluate the small expression subset present in the actual YAML, without evaluating code.
+        comparison = r"github\.event_name == '([^']+)'"
+        fmt = r"format\('([^']+)', ([a-z_.]+(?:, [a-z_.]+)*)\)"
+        condition = re.fullmatch(r"\$\{\{ " + comparison + r" \}\}", str(config["cancel-in-progress"]))
+        self.assertIsNotNone(condition)
+
+        def replace(match):
+            expr = match[1].strip()
+            if expr in values:
+                return str(values[expr])
+            choice = re.fullmatch(comparison + " && " + fmt + r" \|\| " + fmt, expr)
+            self.assertIsNotNone(choice, expr)
+            template, fields = choice.group(2, 3) if event == choice[1] else choice.group(4, 5)
+            return template.format(*(values[field] for field in fields.split(", ")))
+
+        group = re.sub(r"\$\{\{(.*?)\}\}", replace, config["group"]).lower()
+        return group, event == condition[1]
+
+    def test_workflow_and_relay_cancellation_scopes(self):
+        config = {}
+        directory = ROOT / ".github/workflows"
+        for file in ("ci.yml", "renovate-policy-tests.yml", "shared-remote-ci.yml"):
+            config[file] = yaml.safe_load((directory / file).read_text())
+        checks = [(wf["name"], wf["concurrency"]) for wf in (config["ci.yml"], config["renovate-policy-tests.yml"])]
+        relay_config = config["shared-remote-ci.yml"]["jobs"]["relay"]["concurrency"]
+        checks.append((checks[0][0], relay_config))
+        pr_groups = []
+        for name, scope in checks:
+            with self.subTest(scope=scope, workflow=name):
+                resolve = lambda **kwargs: self.resolve(scope, workflow=name, **kwargs)
+                group, cancel = resolve()
+                self.assertTrue(cancel)
+                pr_groups.append(group)
+                self.assertEqual(resolve(run=124, attempt=2), (group, True))
+                self.assertNotEqual(resolve(pr=43)[0], group)
+                push, cancel = resolve(event="push", pr="")
+                self.assertFalse(cancel)
+                self.assertEqual(len({group, push, resolve(event="push", run=124, pr="")[0],
+                                      resolve(event="push", attempt=2, pr="")[0]}), 4)
+        self.assertEqual(len(set(pr_groups)), len(pr_groups))
+        self.assertNotEqual(self.resolve(relay_config, mode="qase90"), self.resolve(relay_config, mode="service"))
 
 
 class MemoryResponse(io.BytesIO):
@@ -148,7 +196,8 @@ class AdmissionTests(unittest.TestCase):
         jobs = completed_jobs()
         jobs[-1]["conclusion"] = "skipped"
         self.assertEqual(relay.gate_results(completed_run(inputs), jobs, inputs)["accepted"], "true")
-        self.assertIsNone(relay.select_run([completed_run(inputs) | {"display_title": relay.run_title(inputs) + " PR #42"}], inputs))
+        with self.assertRaisesRegex(relay.Rejected, "source pull request"):
+            relay.select_run([completed_run(inputs) | {"display_title": relay.run_title(inputs) + " PR #42"}], inputs)
         for update in ({"GITHUB_REF": "refs/heads/other"}, {"SOURCE_PR_NUMBER": "42"},
                        {"SOURCE_BASE_SHA": BASE}, {"SOURCE_HEAD_SHA": HEAD}):
             with self.subTest(update=update), self.assertRaises(relay.Rejected):
@@ -159,10 +208,14 @@ class AdmissionTests(unittest.TestCase):
         old = completed_run(inputs)
         new = old | {"display_title": old["display_title"] + f" PR #{inputs['source_pr_number']}"}
         wrong = old | {"display_title": old["display_title"] + " PR #999999"}
-        self.assertEqual(relay.select_run([old, wrong], inputs), old)
-        self.assertEqual(relay.select_run([new, wrong], inputs), new)
-        with self.assertRaises(relay.Rejected):
-            relay.select_run([old, new], inputs)
+        other_attempt = old | {"display_title": old["display_title"] + "0 PR #42"}
+        self.assertEqual(relay.select_run([old, other_attempt], inputs), old)
+        self.assertEqual(relay.select_run([new, other_attempt], inputs), new)
+        with self.assertRaisesRegex(relay.Rejected, "source pull request"):
+            relay.select_run([wrong], inputs)
+        for pair in ((old, new), (old, wrong), (new, wrong)):
+            with self.subTest(pair=pair), self.assertRaisesRegex(relay.Rejected, "Multiple"):
+                relay.select_run(pair, inputs)
 
     def test_forks_wrong_events_and_malformed_identity_fail_before_api_access(self):
         for update in ({"SOURCE_HEAD_REPOSITORY": "outsider/template"},

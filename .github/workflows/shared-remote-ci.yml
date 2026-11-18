@@ -36,6 +36,10 @@ permissions: {}
 
 jobs:
   relay:
+    # A distinct prefix avoids cancelling the caller when it also uses concurrency.
+    concurrency:
+      group: private-ci-relay-${{ github.workflow }}-${{ inputs.mode }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     if: >-
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||

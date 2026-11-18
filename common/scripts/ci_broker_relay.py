@@ -209,12 +209,19 @@ class GitHub:
 
 
 def select_run(rows, inputs):
-    matches = [row for row in rows if row.get("display_title") == run_title(inputs)]
+    base = run_title(inputs)
+    titles = {base}
+    if pr := inputs["source_pr_number"]:
+        titles.add(f"{base} PR #{pr}")
+    matches = [row for row in rows if isinstance(title := row.get("display_title"), str)
+               and (title == base or title.startswith(base + " PR #"))]
     if len(matches) > 1:
         raise Rejected("Multiple private CI runs claim the same source attempt")
     if not matches:
         return None
     run = matches[0]
+    if run["display_title"] not in titles:
+        raise Rejected("Private CI run title does not match the source pull request")
     if (type(run.get("id")) is not int or run["id"] < 1
             or run.get("event") != "workflow_dispatch"
             or run.get("head_branch") != BROKER_REF

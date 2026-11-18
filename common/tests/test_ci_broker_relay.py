@@ -148,10 +148,21 @@ class AdmissionTests(unittest.TestCase):
         jobs = completed_jobs()
         jobs[-1]["conclusion"] = "skipped"
         self.assertEqual(relay.gate_results(completed_run(inputs), jobs, inputs)["accepted"], "true")
+        self.assertIsNone(relay.select_run([completed_run(inputs) | {"display_title": relay.run_title(inputs) + " PR #42"}], inputs))
         for update in ({"GITHUB_REF": "refs/heads/other"}, {"SOURCE_PR_NUMBER": "42"},
                        {"SOURCE_BASE_SHA": BASE}, {"SOURCE_HEAD_SHA": HEAD}):
             with self.subTest(update=update), self.assertRaises(relay.Rejected):
                 relay.request_inputs(env | update)
+
+    def test_relay_finds_either_broker_title_during_rollout(self):
+        inputs = relay.request_inputs(environment())
+        old = completed_run(inputs)
+        new = old | {"display_title": old["display_title"] + f" PR #{inputs['source_pr_number']}"}
+        wrong = old | {"display_title": old["display_title"] + " PR #999999"}
+        self.assertEqual(relay.select_run([old, wrong], inputs), old)
+        self.assertEqual(relay.select_run([new, wrong], inputs), new)
+        with self.assertRaises(relay.Rejected):
+            relay.select_run([old, new], inputs)
 
     def test_forks_wrong_events_and_malformed_identity_fail_before_api_access(self):
         for update in ({"SOURCE_HEAD_REPOSITORY": "outsider/template"},

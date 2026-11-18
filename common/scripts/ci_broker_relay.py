@@ -209,7 +209,10 @@ class GitHub:
 
 
 def select_run(rows, inputs):
-    matches = [row for row in rows if row.get("display_title") == run_title(inputs)]
+    titles = {run_title(inputs)}
+    if pr := inputs["source_pr_number"]:
+        titles.add(f"{run_title(inputs)} PR #{pr}")
+    matches = [row for row in rows if row.get("display_title") in titles]
     if len(matches) > 1:
         raise Rejected("Multiple private CI runs claim the same source attempt")
     if not matches:

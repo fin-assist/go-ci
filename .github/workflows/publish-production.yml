@@ -41,6 +41,7 @@ jobs:
             /apps/render_release.py
             /apps/production_release_receipt.py
             /apps/production_release_control.py
+            /apps/production_release_drain.py
       - name: Install Helm
         working-directory: ${{ runner.temp }}
         run: |

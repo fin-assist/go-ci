@@ -234,7 +234,9 @@ class ReleaseManifestTests(unittest.TestCase):
         for service in argo.SERVICES:
             renderer.reset_mock()
             image="ghcr.io/fin-assist/infra-service-"+service+"@sha256:"+"a"*64
-            renderer.rollout.return_value={"kind":"Rollout","spec":{"literal":"{{ unchanged }}"}}
+            renderer.rollout.return_value={"kind":"Rollout","spec":{"literal":"{{ unchanged }}",
+                "strategy":{"blueGreen":{"activeService":service,"autoPromotionEnabled":True}}}}
+            renderer.release_receipt.return_value={"kind":"Job","metadata":{"name":"receipt"}}
             renderer.migration.return_value={"kind":"Job"}
             with tempfile.TemporaryDirectory() as tmp:
                 archive=charts.chart(service,image,"b"*40,"1.20.1",renderer,{service:2},tmp)
@@ -245,9 +247,37 @@ class ReleaseManifestTests(unittest.TestCase):
                     data=tar.extractfile(f"production-{service}/workloads.yaml").read().decode()
                     objects=[json.loads(doc) for doc in data.split("---\n")]
                 self.assertEqual(objects[-1],renderer.rollout.return_value)
-                self.assertEqual([o["kind"] for o in objects],["Rollout"] if service=="bank-bff" else ["Job","Rollout"])
-                self.assertEqual([p["target"]["kind"] for p in argo.exclusions(service)],list(reversed([o["kind"] for o in objects])))
+                self.assertEqual([o["kind"] for o in objects],["Job", "Rollout"] if service=="bank-bff" else ["Job","Job","Rollout"])
+                self.assertEqual([p["target"]["kind"] for p in argo.exclusions(service)],list(reversed([o["kind"] for o in objects[1:]])))
                 self.assertFalse(argo.application(service)["spec"]["syncPolicy"]["automated"]["enabled"])
                 if service!="bank-bff":
                     renderer.migration.assert_called_once_with(service,"sha256:"+"a"*64,2,"infra-service-"+service)
                 renderer.rollout.assert_called_once_with(service,image)
+
+    def test_rollback_preserves_exact_observed_image_without_sql(self):
+        import json
+        import tarfile
+        import tempfile
+        import sys
+        from unittest.mock import patch
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        with patch.object(sys, "path", [str(scripts), *sys.path]):
+            from production_chart import chart
+        renderer = Mock(SERVICES=("user",), PEERS={"user"})
+        renderer.release_receipt.return_value = {"kind": "Job", "metadata": {"name": "receipt"}}
+        renderer.rollout.return_value = {"kind": "Rollout", "spec": {
+            "strategy": {"blueGreen": {"activeService": "user", "autoPromotionEnabled": True}}}}
+        sha = "a" * 40
+        for package in ("user", "infra-service-user"):
+            image = "ghcr.io/fin-assist/" + package + "@sha256:" + "b" * 64
+            with tempfile.TemporaryDirectory() as tmp:
+                path = chart("user", image, sha, "1.25.1", renderer, {}, tmp, rollback=True)
+                with tarfile.open(path) as archive:
+                    manifest = json.load(archive.extractfile("production-user/Chart.yaml"))
+                self.assertEqual(manifest["annotations"]["plainfin.ru/operation"], "rollback")
+                self.assertEqual(manifest["appVersion"], "b" * 64)
+                renderer.migration.assert_not_called()
+                renderer.release_receipt.assert_called_with("user", image, "1.25.1", "rollback")
+                renderer.rollout.assert_called_with("user", image)
+                with self.assertRaises(ValueError):
+                    chart("user", image.replace(package+"@", "assistant@"), sha, "1.25.1", renderer, {}, tmp, rollback=True)

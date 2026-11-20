@@ -1,0 +1,58 @@
+name: Publish production release for Argo CD
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        type: string
+        required: true
+      run:
+        type: string
+        required: true
+      attempt:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.repository == 'fin-assist/go-ci' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: production-delivery
+    timeout-minutes: 20
+    concurrency:
+      group: publish-production-${{ inputs.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: go-ci
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fin-assist/infra
+          ref: main
+          token: ${{ secrets.DELIVERY_READ_TOKEN }}
+          path: infra
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /scripts/service_ci.py
+            /scripts/service_delivery.py
+            /apps/render_release.py
+            /overlays/prod/app-runtime/migration-attempts.json
+      - name: Install Helm
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --location --max-time 90 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz -o helm.tgz
+          echo 'a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496  helm.tgz' | sha256sum -c -
+          tar xzf helm.tgz linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+      - name: Check current main, publish its private chart and read it back
+        env:
+          SERVICE_REPOSITORY: ${{ inputs.repository }}
+          SERVICE_RUN: ${{ inputs.run }}
+          SERVICE_ATTEMPT: ${{ inputs.attempt }}
+          DELIVERY_READ_TOKEN: ${{ secrets.DELIVERY_READ_TOKEN }}
+          REGISTRY_USER: ${{ vars.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 -I go-ci/common/scripts/publish_production.py

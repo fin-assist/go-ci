@@ -115,7 +115,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
         # The central workflow logs may be public. Hide private evidence and subprocess diagnostics.
         print(f"Production release failed ({type(exc).__name__}).", file=sys.stderr)
         sys.exit(1)

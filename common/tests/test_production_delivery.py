@@ -143,3 +143,84 @@ class ProductionDispatchTests(unittest.TestCase):
                         self.publisher.publish_chart(file, "production-user", "1.101.1", root, check)
                 self.assertEqual(check.call_count, 0 if denied else 1)
                 self.assertEqual(bool(stored), not denied)
+
+
+class PublisherReceiptTests(unittest.TestCase):
+    def test_only_exact_complete_private_evidence_is_returned(self):
+        import re
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        sha, repo = "a"*40, "fin-assist/user"
+        run = dict(id=50, run_attempt=1, head_sha="c"*40, event="workflow_run")
+        source = dict(id=10, run_attempt=2, run_started_at="2026-11-20T08:00:00Z")
+        ci = SimpleNamespace(INFRA="fin-assist/infra", SERVICES={repo:"user"}, SHA=re.compile("[0-9a-f]{40}"),
+                             validate_source=Mock(), receipt_inputs=Mock())
+        private = Mock(ci=ci)
+        receipt = dict(source_repository=repo, source_sha=sha, source_run_id="10", source_run_attempt="2",
+                       service="user", event="push")
+        image = "ghcr.io/fin-assist/infra-service-user@sha256:"+"b"*64
+        artifact = dict(expired=False, name="delivery-evidence-1", workflow_run={"id":50})
+        for kind in ("success", "expired", "previous-attempt", "foreign-source", "foreign-publisher",
+                     "missing-gate", "bad-image", "foreign-artifact"):
+            with self.subTest(kind=kind):
+                private.reset_mock()
+                provenance = dict(source={**receipt}, publisher_run_id=50, publisher_run_attempt=1, publisher_sha=run["head_sha"], image=image)
+                item = dict(image=image, provenance=provenance)
+                meta = {**artifact}
+                if kind == "expired":
+                    meta["expired"]=True
+                if kind == "foreign-artifact":
+                    meta["workflow_run"]={"id":888}
+                if kind == "previous-attempt":
+                    provenance["source"]["source_run_attempt"]="1"
+                if kind == "foreign-source":
+                    provenance["source"]["source_repository"]="fin-assist/assistant"
+                if kind == "foreign-publisher":
+                    provenance["publisher_run_id"]=51
+                private.gates.side_effect = ValueError("isolated-stage failed") if kind == "missing-gate" else None
+                private.reference.side_effect = ValueError("image mismatch") if kind == "bad-image" else None
+                evidence=Mock(return_value={"user":item})
+                get=Mock(side_effect=[{"total_count":1,"artifacts":[meta]},run])
+                with patch.object(delivery,"current_push",return_value=source), patch.object(delivery,"publisher_runs",return_value=[run]):
+                    if kind == "success":
+                        self.assertEqual(delivery.resolve(repo,sha,Mock(),get,private,evidence),item)
+                        self.assertEqual(private.gates.call_args.kwargs["required"],("publish","isolated-stage"))
+                        private.source_success.assert_called_once()
+                        private.broker_success.assert_called_once()
+                    else:
+                        with self.assertRaises(ValueError):
+                            delivery.resolve(repo,sha,Mock(),get,private,evidence)
+
+
+class ReleaseManifestTests(unittest.TestCase):
+    def test_chart_keeps_service_scope_and_workload_order(self):
+        import json
+        import sys
+        import tarfile
+        import tempfile
+        from unittest.mock import patch
+        scripts=Path(__file__).resolve().parents[1]/"scripts"
+        with patch.object(sys,"path",[str(scripts),*sys.path]):
+            import production_chart as charts
+            import production_argocd as argo
+        renderer=Mock(SERVICES=argo.SERVICES, PEERS=set(argo.SERVICES)-{"bank-bff"})
+        for service in argo.SERVICES:
+            renderer.reset_mock()
+            image="ghcr.io/fin-assist/infra-service-"+service+"@sha256:"+"a"*64
+            renderer.rollout.return_value={"kind":"Rollout","spec":{"literal":"{{ unchanged }}"}}
+            renderer.migration.return_value={"kind":"Job"}
+            with tempfile.TemporaryDirectory() as tmp:
+                archive=charts.chart(service,image,"b"*40,"1.20.1",renderer,{service:2},tmp)
+                first=archive.read_bytes()
+                renderer.reset_mock()
+                self.assertEqual(charts.chart(service,image,"b"*40,"1.20.1",renderer,{service:2},tmp).read_bytes(),first)
+                with tarfile.open(archive) as tar:
+                    data=tar.extractfile(f"production-{service}/workloads.yaml").read().decode()
+                    objects=[json.loads(doc) for doc in data.split("---\n")]
+                self.assertEqual(objects[-1],renderer.rollout.return_value)
+                self.assertEqual([o["kind"] for o in objects],["Rollout"] if service=="bank-bff" else ["Job","Rollout"])
+                self.assertEqual([p["target"]["kind"] for p in argo.exclusions(service)],list(reversed([o["kind"] for o in objects])))
+                self.assertFalse(argo.application(service)["spec"]["syncPolicy"]["automated"]["enabled"])
+                if service!="bank-bff":
+                    renderer.migration.assert_called_once_with(service,"sha256:"+"a"*64,2,"infra-service-"+service)
+                renderer.rollout.assert_called_once_with(service,image)

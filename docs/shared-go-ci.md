@@ -192,6 +192,77 @@ production-образа. **Re-run failed jobs** сохраняет исходн�
 
 Откройте **Actions → Deploy production → Run workflow** в репозитории сервиса и оставьте `main`. Выкатка использует образ текущего защищённого `main`, который прошёл CI, публикацию в приватный GHCR и проверку на изолированном стенде. Повтор после продвижения `main` требует нового запуска. Порядок работы с Argo CD, откат и однократная настройка описаны в [инструкции по выкатке](production-delivery.md).
 
+### Совместимость с прямым publisher
+
+Этот интерфейс сохраняется для потребителей `shared-production-image.yml`. Пять сервисов с приватным relay используют описанный выше путь через общий publisher.
+
+`shared-image.yml` собирает образ, выполняет smoke и извлекает stage-бинарь
+из того же image ID. При подключении прямого publisher передайте
+`prepare_production: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}` в `image-check`. На push в `main` CI сохраняет
+архив основного образа и его контрольную сумму. Сборка использует права
+чтения. Вынесенная публикация сохраняет отдельный результат CI для stage.
+
+Добавьте в сервис `.github/workflows/production-image.yml` с явным ref защищённой ветки.
+
+```yaml
+name: Publish production image
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    uses: fin-assist/go-ci/.github/workflows/shared-production-image.yml@main
+```
+
+Publisher сверяет событие успешного push/main, идентичность репозитория
+и путь исходного CI. Перед новой публикацией он проверяет статусы
+`go`, `lint` и `image` конкретной попытки.
+Затем он проверяет SHA, run ID, attempt и контрольные суммы скачанного
+архива, сканирует его Trivy и формирует CycloneDX SBOM. Ошибка сканера
+или уязвимость HIGH/CRITICAL блокируют публикацию. Для повтора повторите
+job публикации, пока сохранён исходный архив. Исходный CI повторять для
+этого не требуется. Если исходный CI завершился после частичного повтора,
+используйте `Re-run all jobs` для исходного CI, чтобы собрать архив
+успешной попытки. При повторе CI publisher сверяет существующий тег по SHA
+с метаданными приватного пакета и датой мержа [go-ci #65](https://github.com/fin-assist/go-ci/pull/65).
+Если образ опубликовали до этого мержа, workflow сохраняет его digest в сводке
+и завершается без загрузки образа и формирования новой квитанции. Первые
+публикации и повторы с тегом, созданным после перехода, идут по обычному пути.
+Перед активацией проверьте приватность пакета и
+доступ к нему GitHub Actions сервисного репозитория. GHCR создаёт первый
+пакет с приватной видимостью. Workflow сверяет её до выдачи digest.
+
+Для основного образа Docker получает время коммита потребителя как `SOURCE_DATE_EPOCH`.
+Отдельный BuildKit с закреплённым digest нормализует метки конфигурации и файлов в новых слоях. При совпадающих
+входах повторная сборка даёт одинаковый digest. Свидетельство публикации,
+проверка Trivy и CycloneDX SBOM формируются в publisher.
+
+Используется `sha-<полный SHA>`. Повтор с тем же digest идемпотентен,
+существующий тег с другим digest блокирует публикацию. Версионный тег
+`vX.Y.Z` относится к отдельному release-потоку с тегом владельца. Идентификатор опубликованного образа доступен в job summary.
+
+Приватный artifact `production-evidence-…` содержит SBOM, отчёт Trivy и
+provenance с digest GHCR, digest конфигурации из архива, Docker image ID,
+source CI run/attempt и контрольными
+суммами. Сохраняйте версии GHCR и доказательства, которые нужны для
+деплоя и отката. GitHub Artifact Attestation для приватного репозитория
+требует GitHub Enterprise Cloud и подключается после сверки тарифа.
+Кластеру нужен отдельный запечатанный pull secret с токеном чтения пакетов.
+
 ## Порядок первоначального подключения и приёмка (FIN-372)
 
 1. Подготовить общий source, self-checks, карту профилей и сверку защит. Source SHA должен существовать на GitHub до запуска consumer workflow, который на него ссылается.

@@ -1,12 +1,10 @@
 name: Request production release
 on:
   workflow_call:
-    secrets:
-      DEPLOY_DISPATCH_TOKEN:
-        required: true
 permissions: {}
 jobs:
   release:
+    environment: production-request
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -20,6 +18,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
         run: |
+          # API 2026-03-10 always returns the run ID and removed return_run_details.
           run_id=$(gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
             repos/fin-assist/go-ci/actions/workflows/publish-production.yml/dispatches \
             -f ref=main -f "inputs[repository]=$GITHUB_REPOSITORY" \

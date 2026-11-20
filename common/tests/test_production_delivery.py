@@ -136,7 +136,7 @@ class ProductionDispatchTests(unittest.TestCase):
             selected = stack.enter_context(patch.object(pub.production_rollback, "selected_release", return_value=head))
             chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
             pub.main()
-            self.assertEqual(chart.call_args.args[:6], ("user", old, self.sha, "1.101.1", pub.render_release, {}))
+            self.assertEqual(chart.call_args.args[:5], ("user", old, self.sha, "1.101.1", pub.render_release))
             self.assertEqual(chart.call_args.kwargs, {"rollback": True})
             source.assert_not_called()
             self.assertEqual(selected.call_count, 2)
@@ -298,10 +298,10 @@ class ReleaseManifestTests(unittest.TestCase):
             renderer.release_receipt.return_value={"kind":"Job","metadata":{"name":"receipt"}}
             renderer.migration.return_value={"kind":"Job"}
             with tempfile.TemporaryDirectory() as tmp:
-                archive=charts.chart(service,image,"b"*40,"1.20.1",renderer,{service:2},tmp)
+                archive=charts.chart(service,image,"b"*40,"1.20.1",renderer,tmp)
                 first=archive.read_bytes()
                 renderer.reset_mock()
-                self.assertEqual(charts.chart(service,image,"b"*40,"1.20.1",renderer,{service:2},tmp).read_bytes(),first)
+                self.assertEqual(charts.chart(service,image,"b"*40,"1.20.1",renderer,tmp).read_bytes(),first)
                 with tarfile.open(archive) as tar:
                     data=tar.extractfile(f"production-{service}/workloads.yaml").read().decode()
                     objects=[json.loads(doc) for doc in data.split("---\n")]
@@ -310,7 +310,7 @@ class ReleaseManifestTests(unittest.TestCase):
                 self.assertEqual([p["target"]["kind"] for p in argo.exclusions(service)],list(reversed([o["kind"] for o in objects[1:]])))
                 self.assertFalse(argo.application(service)["spec"]["syncPolicy"]["automated"]["enabled"])
                 if service!="bank-bff":
-                    renderer.migration.assert_called_once_with(service,"sha256:"+"a"*64,2,"infra-service-"+service)
+                    renderer.migration.assert_called_once_with(service,"sha256:"+"a"*64,"1.20.1","infra-service-"+service)
                 renderer.rollout.assert_called_once_with(service,image)
 
     def test_rollback_preserves_exact_observed_image_without_sql(self):
@@ -330,7 +330,7 @@ class ReleaseManifestTests(unittest.TestCase):
         for package in ("user", "infra-service-user"):
             image = "ghcr.io/fin-assist/" + package + "@sha256:" + "b" * 64
             with tempfile.TemporaryDirectory() as tmp:
-                path = chart("user", image, sha, "1.25.1", renderer, {}, tmp, rollback=True)
+                path = chart("user", image, sha, "1.25.1", renderer, tmp, rollback=True)
                 with tarfile.open(path) as archive:
                     manifest = json.load(archive.extractfile("production-user/Chart.yaml"))
                 self.assertEqual(manifest["annotations"]["plainfin.ru/operation"], "rollback")
@@ -339,4 +339,4 @@ class ReleaseManifestTests(unittest.TestCase):
                 renderer.release_receipt.assert_called_with("user", image, "1.25.1", "rollback")
                 renderer.rollout.assert_called_with("user", image)
                 with self.assertRaises(ValueError):
-                    chart("user", image.replace(package+"@", "assistant@"), sha, "1.25.1", renderer, {}, tmp, rollback=True)
+                    chart("user", image.replace(package+"@", "assistant@"), sha, "1.25.1", renderer, tmp, rollback=True)

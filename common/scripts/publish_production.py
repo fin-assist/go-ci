@@ -131,13 +131,12 @@ def main():
                 check()
                 print("This rollback action has already published its release.")
                 return
-            file = production_chart.chart(service, image, sha, version, render_release, {}, folder, rollback=True)
+            file = production_chart.chart(service, image, sha, version, render_release, folder, rollback=True)
         else:
             def evidence(run, number):
                 return delivery.publisher_evidence(dict(publisher_run_id=run, publisher_run_attempt=number),
                                                    env["DELIVERY_READ_TOKEN"])
             item = production_delivery.resolve(repo, sha, get, get, delivery, evidence)
-            attempts = delivery.read_json(ROOT / "infra/overlays/prod/app-runtime/migration-attempts.json")
 
             def check():
                 still_authorized()
@@ -148,7 +147,7 @@ def main():
                 delivery.validate_run(current, ci.INFRA, delivery.PUBLISH_WORKFLOW, pub["publisher_run_id"],
                                       pub["publisher_run_attempt"], pub["publisher_sha"])
 
-            file = production_chart.chart(service, item["image"], sha, version, render_release, attempts, folder)
+            file = production_chart.chart(service, item["image"], sha, version, render_release, folder)
         publish_chart(file, name, version, folder, check, helm)
     print("Release published for Argo CD reconciliation.")
 

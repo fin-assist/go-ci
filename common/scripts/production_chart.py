@@ -8,7 +8,7 @@ import re
 import tarfile
 
 
-def chart(service, image, source_sha, version, renderer, attempts, destination, *, rollback=False):
+def chart(service, image, source_sha, version, renderer, destination, *, rollback=False):
     if service not in renderer.SERVICES or not re.fullmatch(r"1\.[1-9][0-9]{0,18}\.[1-9][0-9]{0,8}", version):
         raise ValueError("Invalid production service or release version")
     repository, sep, digest = image.partition("@")
@@ -22,7 +22,7 @@ def chart(service, image, source_sha, version, renderer, attempts, destination, 
     operation = "rollback" if rollback else "deploy"
     resources = [renderer.release_receipt(service, image, version, operation)]
     if not rollback and service in renderer.PEERS:
-        resources.append(renderer.migration(service, digest, attempts.get(service, 1), package))
+        resources.append(renderer.migration(service, digest, version, package))
     workload = renderer.rollout(service, image)
     strategy = workload["spec"]["strategy"]
     if set(strategy) != {"blueGreen"} or strategy["blueGreen"].get("activeService") != service or any(

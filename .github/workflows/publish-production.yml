@@ -40,7 +40,6 @@ jobs:
             /scripts/service_delivery.py
             /apps/render_release.py
             /apps/production_release_receipt.py
-            /overlays/prod/app-runtime/migration-attempts.json
       - name: Install Helm
         working-directory: ${{ runner.temp }}
         run: |

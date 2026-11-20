@@ -209,11 +209,14 @@ class PublisherReceiptTests(unittest.TestCase):
                         self.assertEqual(private.gates.call_args.kwargs["required"], ("publish", "isolated-stage"))
                         private.source_success.assert_called_once()
                         private.broker_success.assert_called_once()
+                    elif kind in ("ambiguous", "foreign-event"):
+                        message = "Ambiguous publication artifact" if kind == "ambiguous" else "Expected a trusted publisher event"
+                        with self.assertRaisesRegex(ValueError, message):
+                            delivery.resolve(repo, sha, Mock(), get, private, evidence)
+                        private.gates.assert_not_called()
                     else:
                         with self.assertRaises(ValueError):
                             delivery.resolve(repo, sha, Mock(), get, private, evidence)
-                        if kind in ("ambiguous", "foreign-event"):
-                            private.gates.assert_not_called()
 
 
 class ReleaseManifestTests(unittest.TestCase):

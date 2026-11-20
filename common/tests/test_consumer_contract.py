@@ -137,7 +137,10 @@ class ConsumerContractTests(unittest.TestCase):
         path = self.root / '.github/workflows/deploy.yml'
         caller = {'name': 'Deploy production', 'on': {'workflow_dispatch': None}, 'permissions': {},
                   'jobs': {'deploy': {'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}}
-        path.write_text(yaml.safe_dump(caller))
+        # Use the actual operator-facing example: unquoted "on" resolves to True in PyYAML.
+        guide = (Path(__file__).resolve().parents[2] / 'docs/production-delivery.md').read_text()
+        example = guide.split('```yaml\n', 1)[1].split('\n```', 1)[0]
+        path.write_text(example)
         self.assertTrue(self.result(doc).wasSuccessful())
         for field, value in [('on', {'push': None}), ('permissions', {'contents': 'write'}),
                              ('jobs', {'deploy': {**caller['jobs']['deploy'], 'secrets': 'inherit'}})]:

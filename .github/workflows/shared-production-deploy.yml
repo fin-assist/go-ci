@@ -27,9 +27,9 @@ jobs:
           for ((i=0; i<160; i++)); do
             result=$(gh api "repos/fin-assist/go-ci/actions/runs/$run_id" --jq 'if .status == "completed" then .conclusion else "pending" end')
             case "$result" in
-              success) echo "Release published. Argo CD tracks rollout health." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+              success) echo "Request published to GHCR. Check the production Application in Argo CD for the outcome." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
               pending) sleep 10 ;;
-              *) echo "::error::Production release publication failed"; exit 1 ;;
+              *) echo "::error::Production request publication failed"; exit 1 ;;
             esac
           done
           echo "::error::Timed out waiting for publication"; exit 1

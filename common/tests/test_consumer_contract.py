@@ -150,6 +150,25 @@ class ConsumerContractTests(unittest.TestCase):
         path.rename(path.with_name('other.yml'))
         self.assertFalse(self.result(doc).wasSuccessful())
 
+    def test_rollback_requires_its_own_protected_relay_and_manual_trigger(self):
+        doc = self.relay_fixture('github.com/fin-assist/user')
+        path = self.root / '.github/workflows/rollback.yml'
+        relay = CONTRACT.SOURCE + 'shared-production-rollback.yml@main'
+        caller = {'name': 'Rollback production', 'on': {'workflow_dispatch': None}, 'permissions': {},
+                  'jobs': {'rollback': {'uses': relay}}}
+        path.write_text(yaml.safe_dump(caller))
+        self.assertTrue(self.result(doc).wasSuccessful())
+        for field, value in (
+            ('on', {'push': None}),
+            ('on', {'workflow_dispatch': {'inputs': {'version': {'required': True}}}}),
+            ('permissions', {'contents': 'write'}),
+            ('jobs', {'rollback': {'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}),
+            ('jobs', {'rollback': {'uses': relay, 'secrets': 'inherit'}}),
+        ):
+            with self.subTest(field=field, value=value):
+                path.write_text(yaml.safe_dump({**caller, field: value}))
+                self.assertFalse(self.result(doc).wasSuccessful())
+
     def test_private_relay_requires_trusted_source_and_exact_secret_boundary(self):
         for mutation in ('source-pin', 'source-path', 'revision', 'library', 'library-module',
                          'unknown-service', 'fork', 'push-branch', 'secrets-inherit', 'wrong-token',

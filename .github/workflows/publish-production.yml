@@ -39,7 +39,7 @@ jobs:
             /scripts/service_ci.py
             /scripts/service_delivery.py
             /apps/render_release.py
-            /overlays/prod/app-runtime/migration-attempts.json
+            /apps/production_release_receipt.py
       - name: Install Helm
         working-directory: ${{ runner.temp }}
         run: |
@@ -54,5 +54,6 @@ jobs:
           SERVICE_ATTEMPT: ${{ inputs.attempt }}
           DELIVERY_READ_TOKEN: ${{ secrets.DELIVERY_READ_TOKEN }}
           REGISTRY_USER: ${{ vars.REGISTRY_USER }}
+          RECEIPT_CREATOR_ID: ${{ vars.RECEIPT_CREATOR_ID }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 -I go-ci/common/scripts/publish_production.py

@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(ROOT / "infra/scripts"), str(ROOT / "infra/apps")]
 import production_chart
 import production_delivery
+import production_rollback
 import render_release
 import service_delivery as delivery
 
@@ -26,26 +27,32 @@ def authorize(repo, run_id, attempt, get):
         raise ValueError("Invalid manual dispatch identity")
     run = get(f"repos/{repo}/actions/runs/{run_id}")
     expected = dict(id=int(run_id), run_attempt=int(attempt), event="workflow_dispatch",
-                    head_branch="main", path=".github/workflows/deploy.yml", status="in_progress")
+                    head_branch="main", status="in_progress")
     if (any(run.get(key) != value for key, value in expected.items()) or
             any(run.get(key, {}).get("full_name") != repo for key in ("repository", "head_repository"))):
         raise ValueError("Expected the active manual service deployment on main")
+    caller = run.get("path")
+    operations = {".github/workflows/deploy.yml": "deploy", ".github/workflows/rollback.yml": "rollback"}
+    if caller not in operations:
+        raise ValueError("Unknown manual production workflow")
+    operation = operations[caller]
+    relay = ci.SHARED + f"/.github/workflows/shared-production-{operation}.yml"
     sha = run["head_sha"]
     branch = get(f"repos/{repo}/branches/main")
     if not ci.SHA.fullmatch(sha) or not branch.get("protected") or branch["commit"]["sha"] != sha:
         raise ValueError("The service main head changed")
     refs = [item for item in run.get("referenced_workflows", []) if item.get("path") in
-            (SHARED_RELAY + "@main", SHARED_RELAY + "@refs/heads/main")]
+            (relay + "@main", relay + "@refs/heads/main")]
     if len(refs) != 1 or refs[0].get("ref") != "refs/heads/main" or not ci.SHA.fullmatch(refs[0].get("sha", "")):
         raise ValueError("Expected the protected reusable deployment workflow")
     shared = get(f"repos/{ci.SHARED}/branches/main")
     relay_sha = refs[0]["sha"]
     if not shared.get("protected") or get(f"repos/{ci.SHARED}/compare/{relay_sha}...{shared['commit']['sha']}")["merge_base_commit"]["sha"] != relay_sha:
         raise ValueError("Deployment workflow is outside protected main")
-    return sha
+    return operation, sha
 
 
-def publish_chart(file, name, version, folder, check):
+def registry(name, folder):
     token = os.environ["REGISTRY_TOKEN"]
     info = ci.api("orgs/fin-assist/packages/container/" + name, token)
     if (info["name"], info["package_type"], info["visibility"], info["owner"]["login"]) != (name, "container", "private", "fin-assist"):
@@ -56,6 +63,11 @@ def publish_chart(file, name, version, folder, check):
                               capture_output=True, timeout=90)
     if helm(["registry", "login", "ghcr.io", "--username", os.environ["REGISTRY_USER"], "--password-stdin"], stdin=token).returncode:
         raise ValueError("GHCR authentication failed")
+    return helm
+
+
+def publish_chart(file, name, version, folder, check, helm=None):
+    helm = helm or registry(name, folder)
     pulled = folder / "pulled"
     pulled.mkdir()
     def pull(selector=version):
@@ -89,32 +101,63 @@ def main():
     infra = get(f"repos/{ci.INFRA}/branches/main")
     if not infra.get("protected") or ci.command(["git", "rev-parse", "HEAD"], cwd=ROOT / "infra") != infra["commit"]["sha"]:
         raise ValueError("Infrastructure checkout differs from protected main")
-    sha = authorize(repo, run_id, attempt, get)
-    def evidence(run, number):
-        return delivery.publisher_evidence(dict(publisher_run_id=run, publisher_run_attempt=number), env["DELIVERY_READ_TOKEN"])
-    item = production_delivery.resolve(repo, sha, get, get, delivery, evidence)
+    operation, sha = authorize(repo, run_id, attempt, get)
     service = ci.SERVICES[repo]
+    name = "production-" + service
     version = f"1.{run_id}.{attempt}"
-    attempts = delivery.read_json(ROOT / "infra/overlays/prod/app-runtime/migration-attempts.json")
-    def check():
-        if authorize(repo, run_id, attempt, get) != sha:
+
+    def still_authorized():
+        if authorize(repo, run_id, attempt, get) != (operation, sha):
             raise ValueError("Manual dispatch advanced")
-        delivery.source_success(item["provenance"]["source"], get)
-        delivery.broker_success(item["provenance"]["source"], get)
-        pub = item["provenance"]
-        current = get(f"repos/{ci.INFRA}/actions/runs/{pub['publisher_run_id']}")
-        delivery.validate_run(current, ci.INFRA, delivery.PUBLISH_WORKFLOW, pub["publisher_run_id"],
-                              pub["publisher_run_attempt"], pub["publisher_sha"])
+
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        file = production_chart.chart(service, item["image"], sha, version, render_release, attempts, root)
-        publish_chart(file, "production-" + service, version, root, check)
+        folder = Path(tmp)
+        helm = registry(name, folder)
+        if operation == "rollback":
+            head = production_rollback.selected_release(helm, service, folder)
+            creator_id = env["RECEIPT_CREATOR_ID"]
+            image = production_rollback.target_for_request(head, version, sha, service, creator_id, get)
+
+            def check():
+                still_authorized()
+                if production_rollback.selected_release(helm, service, folder) != head:
+                    raise production_rollback.RollbackError("The active GHCR release changed during rollback selection")
+                if image is not None:
+                    history = production_rollback.receipts(service, creator_id, get)
+                    if head.version not in history or production_rollback.previous_image(head, history) != image:
+                        raise production_rollback.RollbackError("The release receipt changed during rollback selection")
+
+            if image is None:
+                check()
+                print("This rollback action has already published its release.")
+                return
+            file = production_chart.chart(service, image, sha, version, render_release, folder, rollback=True)
+        else:
+            def evidence(run, number):
+                return delivery.publisher_evidence(dict(publisher_run_id=run, publisher_run_attempt=number),
+                                                   env["DELIVERY_READ_TOKEN"])
+            item = production_delivery.resolve(repo, sha, get, get, delivery, evidence)
+
+            def check():
+                still_authorized()
+                pub = item["provenance"]
+                delivery.source_success(pub["source"], get)
+                delivery.broker_success(pub["source"], get)
+                current = get(f"repos/{ci.INFRA}/actions/runs/{pub['publisher_run_id']}")
+                delivery.validate_run(current, ci.INFRA, delivery.PUBLISH_WORKFLOW, pub["publisher_run_id"],
+                                      pub["publisher_run_attempt"], pub["publisher_sha"])
+
+            file = production_chart.chart(service, item["image"], sha, version, render_release, folder)
+        publish_chart(file, name, version, folder, check, helm)
     print("Release published for Argo CD reconciliation.")
 
 
 if __name__ == "__main__":
     try:
         main()
+    except production_rollback.RollbackError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         # The central workflow logs may be public. Hide private evidence and subprocess diagnostics.
         print(f"Production release failed ({type(exc).__name__}).", file=sys.stderr)

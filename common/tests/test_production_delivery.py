@@ -160,36 +160,55 @@ class PublisherReceiptTests(unittest.TestCase):
                        service="user", event="push")
         image = "ghcr.io/fin-assist/infra-service-user@sha256:"+"b"*64
         artifact = dict(expired=False, name="delivery-evidence-1", workflow_run={"id":50})
-        for kind in ("success", "expired", "previous-attempt", "foreign-source", "foreign-publisher",
-                     "missing-gate", "bad-image", "foreign-artifact"):
+        cases = ("success", "expired", "previous-attempt", "foreign-source", "foreign-sha", "foreign-run",
+                 "foreign-publisher", "missing-gate", "bad-image", "foreign-artifact", "missing-artifact", "other-service")
+        skip = {"expired", "previous-attempt", "foreign-source", "foreign-sha", "foreign-run",
+                "missing-artifact", "other-service"}
+        for kind in cases:
             with self.subTest(kind=kind):
                 private.reset_mock()
-                provenance = dict(source={**receipt}, publisher_run_id=50, publisher_run_attempt=1, publisher_sha=run["head_sha"], image=image)
+                good_provenance = dict(source=receipt, publisher_run_id=51, publisher_run_attempt=1,
+                                       publisher_sha=run["head_sha"], image=image)
+                good_item = dict(image=image, provenance=good_provenance)
+                provenance = {**good_provenance, "source": dict(receipt), "publisher_run_id": 50}
                 item = dict(image=image, provenance=provenance)
-                meta = {**artifact}
+                meta = dict(artifact)
                 if kind == "expired":
-                    meta["expired"]=True
+                    meta["expired"] = True
                 if kind == "foreign-artifact":
-                    meta["workflow_run"]={"id":888}
-                if kind == "previous-attempt":
-                    provenance["source"]["source_run_attempt"]="1"
-                if kind == "foreign-source":
-                    provenance["source"]["source_repository"]="fin-assist/assistant"
+                    meta["workflow_run"] = {"id": 888}
+                other_source = {"previous-attempt": ("source_run_attempt", "1"),
+                                "foreign-source": ("source_repository", "fin-assist/assistant"),
+                                "foreign-sha": ("source_sha", "f" * 40), "foreign-run": ("source_run_id", "9")}
+                if kind in other_source:
+                    key, value = other_source[kind]
+                    provenance["source"][key] = value
                 if kind == "foreign-publisher":
-                    provenance["publisher_run_id"]=51
+                    provenance["publisher_run_id"] = 52
                 private.gates.side_effect = ValueError("isolated-stage failed") if kind == "missing-gate" else None
                 private.reference.side_effect = ValueError("image mismatch") if kind == "bad-image" else None
-                evidence=Mock(return_value={"user":item})
-                get=Mock(side_effect=[{"total_count":1,"artifacts":[meta]},run])
-                with patch.object(delivery,"current_push",return_value=source), patch.object(delivery,"publisher_runs",return_value=[run]):
-                    if kind == "success":
-                        self.assertEqual(delivery.resolve(repo,sha,Mock(),get,private,evidence),item)
-                        self.assertEqual(private.gates.call_args.kwargs["required"],("publish","isolated-stage"))
+                entries = {50: {} if kind == "other-service" else {"user": item}, 51: {"user": good_item}}
+                evidence = lambda run_id, attempt: entries[run_id]
+                artifacts = {"total_count": 1, "artifacts": [meta]}
+                runs = [run]
+                responses = [{"total_count": 0, "artifacts": []} if kind == "missing-artifact" else artifacts]
+                if kind in skip:
+                    runs.append({**run, "id": 51})
+                    responses.extend([{"total_count": 1, "artifacts": [{**artifact, "workflow_run": {"id": 51}}]}, runs[1]])
+                else:
+                    responses.append(run)
+                with patch.object(delivery, "current_push", return_value=source), patch.object(
+                        delivery, "publisher_runs", return_value=runs):
+                    get = Mock(side_effect=responses)
+                    if kind == "success" or kind in skip:
+                        expected = good_item if kind in skip else item
+                        self.assertEqual(delivery.resolve(repo, sha, Mock(), get, private, evidence), expected)
+                        self.assertEqual(private.gates.call_args.kwargs["required"], ("publish", "isolated-stage"))
                         private.source_success.assert_called_once()
                         private.broker_success.assert_called_once()
                     else:
                         with self.assertRaises(ValueError):
-                            delivery.resolve(repo,sha,Mock(),get,private,evidence)
+                            delivery.resolve(repo, sha, Mock(), get, private, evidence)
 
 
 class ReleaseManifestTests(unittest.TestCase):

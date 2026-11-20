@@ -6,6 +6,20 @@
 
 Пакет содержит Rollout одного сервиса. Для четырёх сервисов с БД он также содержит обычную Job с командой `migrate up` из того же образа по digest. Она применяет **все ожидающие SQL-миграции** и работает в более ранней волне синхронизации. Имя Job вычисляет действующий генератор по её спецификации. Завершённая Job остаётся в кластере для повторной синхронизации. При ошибке остановитесь на версии, отмеченной dirty, и воспользуйтесь инструкцией сервиса по восстановлению миграций. У `bank-bff` только Rollout.
 
+## Workflow сервиса
+
+Создайте файл `.github/workflows/deploy.yml` со следующим содержимым. Publisher проверяет путь, событие `workflow_dispatch` и ссылку на защищённый `go-ci/main`. Секрет запроса общий job получает из Environment сервиса.
+
+```yaml
+name: Deploy production
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  deploy:
+    uses: fin-assist/go-ci/.github/workflows/shared-production-deploy.yml@main
+```
+
 ## Разовое подключение
 
 1. В `go-ci` создайте Environment `production-delivery`, ограниченный защищённой веткой `main`. Добавьте `DELIVERY_READ_TOKEN` с Contents/Actions Read для инфраструктуры, пяти сервисов и общего CI. Выделите отдельную учётную запись для публикации с записью только в пять приватных пакетов релизов, её логин в `REGISTRY_USER`, токен в `REGISTRY_TOKEN`. В org GHCR заранее создайте пять **private** Helm-пакетов `production-<service>` под этой учётной записью. Для начальной публикации подходит пустой Helm chart версии `0.1.0`, диапазон Argo CD выбирает только `1.*`. Не предоставляйте сервисным GITHUB_TOKEN доступ к пакетам. В каждом сервисе создайте Environment `production-request` и разрешите в нём только ветку `main` (тип branch, точное имя без wildcard). Храните `DEPLOY_DISPATCH_TOKEN` только в этом Environment. У токена права Actions Write только на `go-ci`. Проверьте, что одноимённого секрета нет на уровне репозитория или организации и запуск с другой ветки отклоняется правилами Environment.

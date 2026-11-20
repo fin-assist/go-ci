@@ -1,0 +1,35 @@
+name: Request production release
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  release:
+    environment: production-request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require a manual run on protected main
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PROTECTED: ${{ github.ref_protected }}
+        run: test "$EVENT" = workflow_dispatch && test "$REF" = refs/heads/main && test "$PROTECTED" = true
+      - name: Request publication and wait for its result
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
+        run: |
+          # API 2026-03-10 always returns the run ID and removed return_run_details.
+          run_id=$(gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
+            repos/fin-assist/go-ci/actions/workflows/publish-production.yml/dispatches \
+            -f ref=main -f "inputs[repository]=$GITHUB_REPOSITORY" \
+            -f "inputs[run]=$GITHUB_RUN_ID" -f "inputs[attempt]=$GITHUB_RUN_ATTEMPT" --jq .workflow_run_id)
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          for ((i=0; i<160; i++)); do
+            result=$(gh api "repos/fin-assist/go-ci/actions/runs/$run_id" --jq 'if .status == "completed" then .conclusion else "pending" end')
+            case "$result" in
+              success) echo "Release published. Argo CD tracks rollout health." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+              pending) sleep 10 ;;
+              *) echo "::error::Production release publication failed"; exit 1 ;;
+            esac
+          done
+          echo "::error::Timed out waiting for publication"; exit 1

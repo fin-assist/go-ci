@@ -189,7 +189,18 @@ def suite(root, common):
                     SOURCE + 'shared-remote-ci.yml@main', SOURCE + 'shared-release.yml@main',
                 }
                 for path in (root / '.github/workflows').glob('*.y*ml'):
-                    pending = [yaml.safe_load(path.read_text())]
+                    document = yaml.safe_load(path.read_text())
+                    if path.name == 'deploy.yml' and modules[0] in PRODUCTION_MODULES:
+                        dispatch = dict(document)
+                        # PyYAML's default loader parses an unquoted "on" as True.
+                        events = dispatch.pop(True if True in dispatch else 'on', None)
+                        self.assertEqual(events, {'workflow_dispatch': None})
+                        self.assertEqual(dispatch, {
+                            'name': 'Deploy production', 'permissions': {},
+                            'jobs': {'deploy': {'uses': SOURCE + 'shared-production-deploy.yml@main'}},
+                        })
+                        continue
+                    pending = [document]
                     while pending:
                         item = pending.pop()
                         if isinstance(item, dict):

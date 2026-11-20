@@ -8,7 +8,7 @@ import re
 import tarfile
 
 
-def chart(service, image, source_sha, version, renderer, destination, *, rollback=False):
+def chart(service, image, source_sha, version, renderer, destination, *, expected_stable=None, rollback=False):
     if service not in renderer.SERVICES or not re.fullmatch(r"1\.[1-9][0-9]{0,18}\.[1-9][0-9]{0,8}", version):
         raise ValueError("Invalid production service or release version")
     repository, sep, digest = image.partition("@")
@@ -20,7 +20,7 @@ def chart(service, image, source_sha, version, renderer, destination, *, rollbac
             or digest[7:] == "0" * 64 or not re.fullmatch(r"[0-9a-f]{40}", source_sha)):
         raise ValueError("Expected an immutable service image and a protected request revision")
     operation = "rollback" if rollback else "deploy"
-    resources = [renderer.release_receipt(service, image, version, operation)]
+    resources = [renderer.release_receipt(service, image, version, operation, expected_stable=expected_stable)]
     if not rollback and service in renderer.PEERS:
         resources.append(renderer.migration(service, digest, version, package))
     workload = renderer.rollout(service, image)
@@ -29,12 +29,34 @@ def chart(service, image, source_sha, version, renderer, destination, *, rollbac
         key in strategy["blueGreen"] for key in ("prePromotionAnalysis", "postPromotionAnalysis", "autoPromotionSeconds")
     ) or strategy["blueGreen"].get("autoPromotionEnabled") is not True:
         raise ValueError("The infrastructure renderer must switch the ready service directly")
+    if not rollback:
+        # Argo also schedules skipped prune tasks for retained Jobs. Put a
+        # deploy last, after any previous rollback finish (+1), so its manual
+        # pause cannot hold the sync open and prevent a subsequent rollback.
+        workload["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "2"
     resources.append(workload)
+    if rollback:
+        resources.append(renderer.rollback_finish(service, image, version))
+    return archive(service, version, operation, source_sha, digest[7:] if rollback else source_sha, resources, destination)
+
+
+def observation(service, source_sha, version, operation, renderer, destination):
+    if (service not in renderer.SERVICES or operation not in ("deploy", "rollback")
+            or not re.fullmatch(r"1\.[1-9][0-9]{0,18}\.[1-9][0-9]{0,8}", version)
+            or not re.fullmatch(r"[0-9a-f]{40}", source_sha)):
+        raise ValueError("Invalid production observation")
+    job = renderer.release_observation(service, version, operation)
+    if job["kind"] != "Job" or job["metadata"]["namespace"] != "plainfin-apps":
+        raise ValueError("Expected one namespaced observation Job")
+    return archive(service, "2" + version[1:], operation, source_sha, source_sha, [job], destination)
+
+
+def archive(service, version, operation, source_sha, app_version, resources, destination):
     name = "production-" + service
     annotations = {"plainfin.ru/operation": operation, "plainfin.ru/request-sha": source_sha}
     files = {
         "Chart.yaml": json.dumps(dict(apiVersion="v2", name=name, version=version,
-                                     appVersion=digest[7:] if rollback else source_sha, annotations=annotations)),
+                                     appVersion=app_version, annotations=annotations)),
         # Values are already rendered by the infrastructure renderer. Never evaluate them as Helm templates.
         "templates/workloads.yaml": '{{ .Files.Get "workloads.yaml" }}\n',
         "workloads.yaml": "\n---\n".join(json.dumps(obj, sort_keys=True) for obj in resources) + "\n",

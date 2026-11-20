@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(ROOT / "infra/scripts"), str(ROOT / "infra/apps")]
 import production_chart
 import production_delivery
+import production_observation
 import production_rollback
 import render_release
 import service_delivery as delivery
@@ -84,7 +85,7 @@ def publish_chart(file, name, version, folder, check, helm=None):
     # A re-run of an older manual run can still point at today's main. Report it
     # as superseded when Argo's version range already selects a newer release.
     (pulled / file.name).unlink()
-    if pull("1.*").returncode or not (pulled / file.name).is_file() or (pulled / file.name).read_bytes() != file.read_bytes():
+    if pull(version.split(".", 1)[0] + ".*").returncode or not (pulled / file.name).is_file() or (pulled / file.name).read_bytes() != file.read_bytes():
         raise ValueError("Argo CD selects a different release version")
 
 
@@ -113,30 +114,48 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
         helm = registry(name, folder)
+        creator_id = env["RECEIPT_CREATOR_ID"]
+        observation_dir = folder / "observation"
+        observation_dir.mkdir()
+        command = production_chart.observation(service, sha, version, operation, render_release, observation_dir)
+        publish_chart(command, name, "2" + version[1:], observation_dir, still_authorized, helm)
+        live = production_observation.wait(service, version, operation, creator_id, get)
+        stable, candidate = live["stable_image"], live["candidate"]
+        if operation == "deploy" and candidate:
+            raise production_rollback.RollbackError("Deploy rejected: the service already has an active candidate")
         if operation == "rollback":
             head = production_rollback.selected_release(helm, service, folder)
-            creator_id = env["RECEIPT_CREATOR_ID"]
-            image = production_rollback.target_for_request(head, version, sha, service, creator_id, get)
+
+            def target():
+                return production_rollback.target_for_request(head, version, sha, service, creator_id, get,
+                                                             stable_image=stable, candidate=candidate)
+
+            image = target()
 
             def check():
                 still_authorized()
                 if production_rollback.selected_release(helm, service, folder) != head:
                     raise production_rollback.RollbackError("The active GHCR release changed during rollback selection")
-                if image is not None:
-                    history = production_rollback.receipts(service, creator_id, get)
-                    if head.version not in history or production_rollback.previous_image(head, history) != image:
-                        raise production_rollback.RollbackError("The release receipt changed during rollback selection")
+                if target() != image:
+                    raise production_rollback.RollbackError("The release receipt changed during rollback selection")
 
             if image is None:
+                # A retry of the same manual rollback must keep its original target.
                 check()
-                print("This rollback action has already published its release.")
-                return
-            file = production_chart.chart(service, image, sha, version, render_release, folder, rollback=True)
+                if head.version == version:
+                    production_observation.wait(service, version, operation, creator_id, get, image=head.image)
+                    return
+                if production_observation.rollback_retry_complete(service, head, live, creator_id, get):
+                    return
+                # A previous attempt may have stopped before switching endpoints.
+                # Reissue its original target under the new attempt's immutable tag.
+            release_image = image or head.image
         else:
             def evidence(run, number):
                 return delivery.publisher_evidence(dict(publisher_run_id=run, publisher_run_attempt=number),
                                                    env["DELIVERY_READ_TOKEN"])
             item = production_delivery.resolve(repo, sha, get, get, delivery, evidence)
+            release_image = item["image"]
 
             def check():
                 still_authorized()
@@ -147,9 +166,11 @@ def main():
                 delivery.validate_run(current, ci.INFRA, delivery.PUBLISH_WORKFLOW, pub["publisher_run_id"],
                                       pub["publisher_run_attempt"], pub["publisher_sha"])
 
-            file = production_chart.chart(service, item["image"], sha, version, render_release, folder)
+        file = production_chart.chart(service, release_image, sha, version, render_release, folder,
+                                      expected_stable=stable, rollback=operation == "rollback")
         publish_chart(file, name, version, folder, check, helm)
-    print("Release published for Argo CD reconciliation.")
+        production_observation.wait(service, version, operation, creator_id, get, image=release_image)
+    print("Production command acknowledged by the cluster.")
 
 
 if __name__ == "__main__":

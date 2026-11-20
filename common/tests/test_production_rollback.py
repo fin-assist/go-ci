@@ -74,24 +74,26 @@ class RollbackTests(unittest.TestCase):
         with self.assertRaises(rollback.RollbackError):
             rollback.receipts("user", "", Mock())
 
-    def test_waits_for_exact_receipt_and_fails_closed_if_it_never_arrives(self):
-        rec = deployment(record("1.101.1", self.b, self.a))
-        with patch.object(rollback.time, "sleep") as wait:
-            result = rollback.target_for_request(self.head, "1.111.1", self.sha, "user", "12", Mock(side_effect=[[], [rec]]))
-            self.assertEqual(result, self.a)
-            wait.assert_called_once()
-            with self.assertRaisesRegex(rollback.RollbackError, "No cluster receipt"):
-                rollback.target_for_request(self.head, "1.111.1", self.sha, "user", "12", Mock(return_value=[]))
+    def test_fresh_observation_allows_rollback_after_rejected_release_has_no_receipt(self):
+        earlier = deployment(record("1.95.1", self.b, self.a))
+        get = Mock(return_value=[earlier])
+        self.assertEqual(rollback.target_for_request(self.head, "1.111.1", self.sha, "user", "12", get,
+                                                    stable_image=self.b, candidate=True), self.a)
+        get.assert_called_once()
+        with self.assertRaisesRegex(rollback.RollbackError, "No previous distinct"):
+            rollback.target_for_request(self.head, "1.111.1", self.sha, "user", "12", Mock(return_value=[]),
+                                        stable_image=self.b, candidate=True)
 
     def test_same_rollback_run_is_idempotent_and_stale_runs_cannot_publish(self):
         head = rollback.Head("1.101.1", self.b, "rollback", self.sha, "")
         get = Mock()
         for version in ("1.101.1", "1.101.3"):
-            self.assertIsNone(rollback.target_for_request(head, version, self.sha, "user", "12", get))
+            self.assertIsNone(rollback.target_for_request(head, version, self.sha, "user", "12", get,
+                                                          stable_image=self.b, candidate=False))
         for version, sha, current in (("1.100.3", self.sha, head), ("1.101.2", "f"*40, head),
                                       ("1.101.2", self.sha, self.head)):
             with self.assertRaises(rollback.RollbackError):
-                rollback.target_for_request(current, version, sha, "user", "12", get)
+                rollback.target_for_request(current, version, sha, "user", "12", get, stable_image=self.b, candidate=False)
         get.assert_not_called()
 
     def test_reads_pulled_immutable_chart_and_detects_foreign_workload(self):

@@ -161,7 +161,8 @@ class PublisherReceiptTests(unittest.TestCase):
         image = "ghcr.io/fin-assist/infra-service-user@sha256:"+"b"*64
         artifact = dict(expired=False, name="delivery-evidence-1", workflow_run={"id":50})
         cases = ("success", "expired", "previous-attempt", "foreign-source", "foreign-sha", "foreign-run",
-                 "foreign-publisher", "missing-gate", "bad-image", "foreign-artifact", "missing-artifact", "other-service")
+                 "foreign-publisher", "missing-gate", "bad-image", "foreign-artifact", "missing-artifact", "other-service",
+                 "ambiguous", "foreign-event")
         skip = {"expired", "previous-attempt", "foreign-source", "foreign-sha", "foreign-run",
                 "missing-artifact", "other-service"}
         for kind in cases:
@@ -196,7 +197,9 @@ class PublisherReceiptTests(unittest.TestCase):
                     runs.append({**run, "id": 51})
                     responses.extend([{"total_count": 1, "artifacts": [{**artifact, "workflow_run": {"id": 51}}]}, runs[1]])
                 else:
-                    responses.append(run)
+                    responses.append({**run, "event": "workflow_dispatch"} if kind == "foreign-event" else run)
+                if kind == "ambiguous":
+                    responses[0] = {"total_count": 2, "artifacts": [meta, meta]}
                 with patch.object(delivery, "current_push", return_value=source), patch.object(
                         delivery, "publisher_runs", return_value=runs):
                     get = Mock(side_effect=responses)
@@ -209,6 +212,8 @@ class PublisherReceiptTests(unittest.TestCase):
                     else:
                         with self.assertRaises(ValueError):
                             delivery.resolve(repo, sha, Mock(), get, private, evidence)
+                        if kind in ("ambiguous", "foreign-event"):
+                            private.gates.assert_not_called()
 
 
 class ReleaseManifestTests(unittest.TestCase):

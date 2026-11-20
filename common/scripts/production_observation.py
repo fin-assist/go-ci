@@ -31,6 +31,29 @@ def event(service, version, operation, creator, task, get, *, image=None):
     return match
 
 
+def rollback_retry_complete(service, head, live, creator, get):
+    """An accepted partial rollback may recover only its original target."""
+    def signal(task):
+        return event(service, head.version, "rollback", creator, task, get, image=head.image)
+
+    if signal("reject-production-release"):
+        raise RollbackError("The previous attempt was rejected; start a new Rollback production run")
+    finished = signal("finish-production-rollback")
+    if finished and finished["status"] == "success":
+        if live["stable_image"] == head.image and not live["candidate"]:
+            return True
+        raise RollbackError("The completed rollback has been superseded; start a new Rollback production run")
+
+    prior = signal("observe-production-release")
+    if prior and live["stable_image"] in (prior["stable_image"], head.image):
+        return False
+    if live["stable_image"] is None:
+        accepted = receipts(service, creator, get).get(head.version)
+        if accepted and accepted["image"] == head.image:
+            return False  # Recover an accepted target with temporarily unready endpoints.
+    raise RollbackError("The stable image changed after the previous attempt; start a new Rollback production run")
+
+
 def wait(service, version, operation, creator, get, *, image=None):
     for poll in range(61):
         if image is None:

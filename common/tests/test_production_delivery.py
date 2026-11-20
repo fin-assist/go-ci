@@ -217,17 +217,32 @@ class ProductionDispatchTests(unittest.TestCase):
         pub = self.publisher
         old, target = ["ghcr.io/fin-assist/infra-service-user@sha256:" + digit*64 for digit in ("1", "2")]
         head = pub.production_rollback.Head("1.101.1", target, "rollback", self.sha, "digest")
-        for stable, candidate, previous, publish_app in (
-                (target, False, {"status": "success"}, False),
-                (old, True, None, True), (old, True, {"status": "failure"}, True)):
-            with self.subTest(stable=stable, previous=previous), ExitStack() as stack:
+        third = "ghcr.io/fin-assist/infra-service-user@sha256:" + "3"*64
+        for stable, candidate, previous, rejected, accepted, action in (
+                (target, False, "success", False, True, "done"),
+                (old, True, None, False, False, "retry"), (target, True, "failure", False, True, "retry"),
+                (None, False, None, False, True, "retry"), (None, False, None, False, False, "reject"),
+                (third, False, None, False, False, "reject"), (third, False, None, True, False, "reject"),
+                (old, True, None, True, False, "reject"), (old, True, "success", False, True, "reject")):
+            with self.subTest(stable=stable, previous=previous, rejected=rejected, accepted=accepted), ExitStack() as stack:
                 wait, publish = self.run_service_command(pub, stack, "rollback", {"stable_image": stable, "candidate": candidate})
                 stack.enter_context(patch.object(pub.production_rollback, "selected_release", return_value=head))
-                stack.enter_context(patch.object(pub.production_observation, "event", return_value=previous))
+                def event(service, version, operation, creator, task, get, *, image):
+                    self.assertEqual((version, image), (head.version, target))
+                    return {"reject-production-release": {"status": "failure"} if rejected else None,
+                            "finish-production-rollback": {"status": previous} if previous else None,
+                            "observe-production-release": {"stable_image": old}}[task]
+                stack.enter_context(patch.object(pub.production_observation, "event", side_effect=event))
+                history = {head.version: {"image": target}} if accepted else {}
+                stack.enter_context(patch.object(pub.production_observation, "receipts", return_value=history))
                 chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
-                pub.main()
-                self.assertEqual(publish.call_count, 2 if publish_app else 1)
-                if publish_app:
+                if action == "reject":
+                    with self.assertRaisesRegex(pub.production_rollback.RollbackError, "new Rollback production run"):
+                        pub.main()
+                else:
+                    pub.main()
+                self.assertEqual(publish.call_count, 2 if action == "retry" else 1)
+                if action == "retry":
                     self.assertEqual((chart.call_args.args[1], wait.call_args.kwargs["image"]), (target, target))
                 else:
                     chart.assert_not_called()

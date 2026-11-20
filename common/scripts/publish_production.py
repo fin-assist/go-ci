@@ -145,9 +145,7 @@ def main():
                 if head.version == version:
                     production_observation.wait(service, version, operation, creator_id, get, image=head.image)
                     return
-                result = production_observation.event(service, head.version, operation, creator_id,
-                                                      "finish-production-rollback", get, image=head.image)
-                if result and result["status"] == "success" and not candidate and stable == head.image:
+                if production_observation.rollback_retry_complete(service, head, live, creator_id, get):
                     return
                 # A previous attempt may have stopped before switching endpoints.
                 # Reissue its original target under the new attempt's immutable tag.

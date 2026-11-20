@@ -190,14 +190,15 @@ def suite(root, common):
                 }
                 for path in (root / '.github/workflows').glob('*.y*ml'):
                     document = yaml.safe_load(path.read_text())
-                    if path.name == 'deploy.yml' and modules[0] in PRODUCTION_MODULES:
+                    if path.name in ('deploy.yml', 'rollback.yml') and modules[0] in PRODUCTION_MODULES:
+                        operation = path.stem
                         dispatch = dict(document)
                         # PyYAML's default loader parses an unquoted "on" as True.
                         events = dispatch.pop(True if True in dispatch else 'on', None)
                         self.assertEqual(events, {'workflow_dispatch': None})
                         self.assertEqual(dispatch, {
-                            'name': 'Deploy production', 'permissions': {},
-                            'jobs': {'deploy': {'uses': SOURCE + 'shared-production-deploy.yml@main'}},
+                            'name': operation.capitalize() + ' production', 'permissions': {},
+                            'jobs': {operation: {'uses': SOURCE + f'shared-production-{operation}.yml@main'}},
                         })
                         continue
                     pending = [document]

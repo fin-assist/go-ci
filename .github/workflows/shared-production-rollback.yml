@@ -1,0 +1,7 @@
+name: Request production rollback
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  rollback:
+    uses: ./.github/workflows/shared-production-deploy.yml

@@ -109,6 +109,33 @@ class ObservationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build()
 
+    def test_deploy_follows_retained_rollback_finish_in_sync_wave_order(self):
+        wave = "argocd.argoproj.io/sync-wave"
+        def resource(kind, name, priority):
+            return {"kind": kind, "metadata": {"name": name, "annotations": {wave: str(priority)}}}
+        renderer = Mock(SERVICES=[SERVICE], PEERS=[SERVICE])
+        renderer.release_receipt.side_effect = lambda *a, **kw: resource("Job", "receipt-" + a[2], -2)
+        renderer.migration.return_value = resource("Job", "migrate", -1)
+        renderer.rollback_finish.return_value = resource("Job", "finish", 1)
+        def rollout(*args):
+            return {**resource("Rollout", SERVICE, 0),
+                    "spec": {"strategy": {"blueGreen": {"activeService": SERVICE, "autoPromotionEnabled": True}}}}
+        renderer.rollout.side_effect = rollout
+        with tempfile.TemporaryDirectory() as temp:
+            def waves(version, undo):
+                path = charts.chart(SERVICE, A, SHA, version, renderer, temp, expected_stable=B, rollback=undo)
+                with tarfile.open(path) as archive:
+                    raw = archive.extractfile("production-user/workloads.yaml").read().decode()
+                objects = [json.loads(doc) for doc in raw.split("\n---\n")]
+                return {obj["metadata"]["name"]: int(obj["metadata"]["annotations"][wave]) for obj in objects}
+            previous = waves("1.40.1", True)
+            deploy = waves("1.41.1", False)
+            self.assertEqual((previous[SERVICE], previous["finish"]), (0, 1))
+            self.assertEqual(deploy[SERVICE], 2)
+            # With prune disabled the old finish Job remains in Argo's task set.
+            combined = {**previous, **deploy}
+            self.assertTrue(all(priority < deploy[SERVICE] for name, priority in combined.items() if name != SERVICE))
+
     def test_initial_get_retry_does_not_repeat_dispatch_and_other_errors_fail(self):
         script = yaml.safe_load((ROOT/".github/workflows/shared-production-deploy.yml").read_text())["jobs"][
             "release"]["steps"][-1]["run"]

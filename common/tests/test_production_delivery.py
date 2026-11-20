@@ -384,7 +384,7 @@ class ReleaseManifestTests(unittest.TestCase):
         for service in argo.SERVICES:
             renderer.reset_mock()
             image="ghcr.io/fin-assist/infra-service-"+service+"@sha256:"+"a"*64
-            renderer.rollout.return_value={"kind":"Rollout","spec":{"literal":"{{ unchanged }}",
+            renderer.rollout.return_value={"kind":"Rollout","metadata":{"annotations":{}}, "spec":{"literal":"{{ unchanged }}",
                 "strategy":{"blueGreen":{"activeService":service,"autoPromotionEnabled":True}}}}
             renderer.release_receipt.return_value={"kind":"Job","metadata":{"name":"receipt"}}
             renderer.migration.return_value={"kind":"Job"}

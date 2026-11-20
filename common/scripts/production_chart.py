@@ -29,6 +29,11 @@ def chart(service, image, source_sha, version, renderer, destination, *, expecte
         key in strategy["blueGreen"] for key in ("prePromotionAnalysis", "postPromotionAnalysis", "autoPromotionSeconds")
     ) or strategy["blueGreen"].get("autoPromotionEnabled") is not True:
         raise ValueError("The infrastructure renderer must switch the ready service directly")
+    if not rollback:
+        # Argo also schedules skipped prune tasks for retained Jobs. Put a
+        # deploy last, after any previous rollback finish (+1), so its manual
+        # pause cannot hold the sync open and prevent a subsequent rollback.
+        workload["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "2"
     resources.append(workload)
     if rollback:
         resources.append(renderer.rollback_finish(service, image, version))

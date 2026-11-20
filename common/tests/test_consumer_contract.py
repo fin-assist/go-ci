@@ -132,6 +132,21 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
                 self.assertEqual(result.testsRun, 3)
 
+    def test_optional_deployment_workflow_is_limited_to_the_manual_production_caller(self):
+        doc = self.relay_fixture('github.com/fin-assist/user')
+        path = self.root / '.github/workflows/deploy.yml'
+        caller = {'name': 'Deploy production', 'on': {'workflow_dispatch': None}, 'permissions': {},
+                  'jobs': {'deploy': {'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}}
+        path.write_text(yaml.safe_dump(caller))
+        self.assertTrue(self.result(doc).wasSuccessful())
+        for field, value in [('on', {'push': None}), ('permissions', {'contents': 'write'}),
+                             ('jobs', {'deploy': {**caller['jobs']['deploy'], 'secrets': 'inherit'}})]:
+            path.write_text(yaml.safe_dump({**caller, field: value}))
+            self.assertFalse(self.result(doc).wasSuccessful())
+        path.write_text(yaml.safe_dump(caller))
+        path.rename(path.with_name('other.yml'))
+        self.assertFalse(self.result(doc).wasSuccessful())
+
     def test_private_relay_requires_trusted_source_and_exact_secret_boundary(self):
         for mutation in ('source-pin', 'source-path', 'revision', 'library', 'library-module',
                          'unknown-service', 'fork', 'push-branch', 'secrets-inherit', 'wrong-token',

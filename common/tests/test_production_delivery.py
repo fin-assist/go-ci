@@ -219,7 +219,7 @@ class ProductionDispatchTests(unittest.TestCase):
         head = pub.production_rollback.Head("1.101.1", target, "rollback", self.sha, "digest")
         third = "ghcr.io/fin-assist/infra-service-user@sha256:" + "3"*64
         for stable, candidate, previous, rejected, accepted, action in (
-                (target, False, "success", False, True, "done"),
+                (target, False, "success", False, True, "done"), (None, False, "success", False, True, "inspect"),
                 (old, True, None, False, False, "retry"), (target, True, "failure", False, True, "retry"),
                 (None, False, None, False, True, "retry"), (None, False, None, False, False, "reject"),
                 (third, False, None, False, False, "reject"), (third, False, None, True, False, "reject"),
@@ -236,7 +236,11 @@ class ProductionDispatchTests(unittest.TestCase):
                 history = {head.version: {"image": target}} if accepted else {}
                 stack.enter_context(patch.object(pub.production_observation, "receipts", return_value=history))
                 chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
-                if action == "reject":
+                if action == "inspect":
+                    with self.assertRaisesRegex(pub.production_rollback.RollbackError, "no ready endpoints") as error:
+                        pub.main()
+                    self.assertNotIn("new Rollback production run", str(error.exception))
+                elif action == "reject":
                     with self.assertRaisesRegex(pub.production_rollback.RollbackError, "new Rollback production run"):
                         pub.main()
                 else:

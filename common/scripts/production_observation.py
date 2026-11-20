@@ -42,6 +42,8 @@ def rollback_retry_complete(service, head, live, creator, get):
     if finished and finished["status"] == "success":
         if live["stable_image"] == head.image and not live["candidate"]:
             return True
+        if live["stable_image"] is None:
+            raise RollbackError("This rollback completed; the service currently has no ready endpoints. Inspect it in Argo CD")
         raise RollbackError("The completed rollback has been superseded; start a new Rollback production run")
 
     prior = signal("observe-production-release")

@@ -8,7 +8,7 @@
 
 ## Workflow сервиса
 
-Файл `.github/workflows/deploy.yml` вызывает общий workflow выкладки. Файл `.github/workflows/rollback.yml` с именем **Rollback production** аналогично вызывает `fin-assist/go-ci/.github/workflows/shared-production-rollback.yml@main` из job `rollback`. Publisher проверяет путь, событие `workflow_dispatch` и ссылку на защищённый `go-ci/main`. Секрет запроса общий job получает из Environment сервиса.
+Файл `.github/workflows/deploy.yml` вызывает общий workflow выкладки. Файл `.github/workflows/rollback.yml` с именем **Rollback production** аналогично вызывает `fin-assist/go-ci/.github/workflows/shared-production-rollback.yml@main` из job `rollback`. Publisher проверяет путь, событие `workflow_dispatch` и ссылку на защищённый `go-ci/main`. Каждый вызов явно передаёт `DEPLOY_DISPATCH_TOKEN` по имени. При откате общий workflow передаёт его дальше в задачу с Environment `production-request` сервиса.
 
 ```yaml
 name: Deploy production
@@ -18,6 +18,8 @@ permissions: {}
 jobs:
   deploy:
     uses: fin-assist/go-ci/.github/workflows/shared-production-deploy.yml@main
+    secrets:
+      DEPLOY_DISPATCH_TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
 ```
 
 ## Разовое подключение

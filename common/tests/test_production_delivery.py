@@ -4,6 +4,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock
 
+import yaml
+
 
 spec = importlib.util.spec_from_file_location(
     "production_delivery", Path(__file__).resolve().parents[1] / "scripts/production_delivery.py")
@@ -12,6 +14,21 @@ spec.loader.exec_module(delivery)
 
 
 class MainPublicationTests(unittest.TestCase):
+    def test_production_relays_forward_the_named_environment_secret(self):
+        workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
+        shared = {kind: yaml.safe_load((workflows / f"shared-production-{kind}.yml").read_text())
+                  for kind in ("deploy", "rollback")}
+        token = "DEPLOY_DISPATCH_TOKEN"
+        for workflow in shared.values():
+            self.assertEqual(workflow[True]["workflow_call"]["secrets"], {token: {"required": True}})
+        rollback = shared["rollback"]["jobs"]["rollback"]
+        self.assertEqual(rollback["uses"], "./.github/workflows/shared-production-deploy.yml")
+        self.assertEqual(rollback["secrets"], {token: "${{ secrets.DEPLOY_DISPATCH_TOKEN }}"})
+        release = shared["deploy"]["jobs"]["release"]
+        self.assertEqual(release["environment"], "production-request")
+        self.assertEqual(next(step["env"]["GH_TOKEN"] for step in release["steps"]
+                              if "GH_TOKEN" in step.get("env", {})), "${{ secrets.DEPLOY_DISPATCH_TOKEN }}")
+
     def test_source_head_or_ci_mismatch_stops_selection(self):
         repo, sha = "fin-assist/user", "a" * 40
         main = {"protected": True, "commit": {"sha": sha}}

@@ -1,6 +1,9 @@
 name: Request production release
 on:
   workflow_call:
+    secrets:
+      DEPLOY_DISPATCH_TOKEN:
+        required: true
 permissions: {}
 jobs:
   release:

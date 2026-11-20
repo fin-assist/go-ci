@@ -198,7 +198,10 @@ def suite(root, common):
                         self.assertEqual(events, {'workflow_dispatch': None})
                         self.assertEqual(dispatch, {
                             'name': operation.capitalize() + ' production', 'permissions': {},
-                            'jobs': {operation: {'uses': SOURCE + f'shared-production-{operation}.yml@main'}},
+                            'jobs': {operation: {
+                                'uses': SOURCE + f'shared-production-{operation}.yml@main',
+                                'secrets': {'DEPLOY_DISPATCH_TOKEN': '${{ secrets.DEPLOY_DISPATCH_TOKEN }}'},
+                            }},
                         })
                         continue
                     pending = [document]

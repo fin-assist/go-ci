@@ -136,13 +136,17 @@ class ConsumerContractTests(unittest.TestCase):
         doc = self.relay_fixture('github.com/fin-assist/user')
         path = self.root / '.github/workflows/deploy.yml'
         caller = {'name': 'Deploy production', 'on': {'workflow_dispatch': None}, 'permissions': {},
-                  'jobs': {'deploy': {'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}}
+                  'jobs': {'deploy': {
+                      'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main',
+                      'secrets': {'DEPLOY_DISPATCH_TOKEN': '${{ secrets.DEPLOY_DISPATCH_TOKEN }}'},
+                  }}}
         # Use the actual operator-facing example: unquoted "on" resolves to True in PyYAML.
         guide = (Path(__file__).resolve().parents[2] / 'docs/production-delivery.md').read_text()
         example = guide.split('```yaml\n', 1)[1].split('\n```', 1)[0]
         path.write_text(example)
         self.assertTrue(self.result(doc).wasSuccessful())
         for field, value in [('on', {'push': None}), ('permissions', {'contents': 'write'}),
+                             ('jobs', {'deploy': {'uses': caller['jobs']['deploy']['uses']}}),
                              ('jobs', {'deploy': {**caller['jobs']['deploy'], 'secrets': 'inherit'}})]:
             path.write_text(yaml.safe_dump({**caller, field: value}))
             self.assertFalse(self.result(doc).wasSuccessful())
@@ -155,14 +159,19 @@ class ConsumerContractTests(unittest.TestCase):
         path = self.root / '.github/workflows/rollback.yml'
         relay = CONTRACT.SOURCE + 'shared-production-rollback.yml@main'
         caller = {'name': 'Rollback production', 'on': {'workflow_dispatch': None}, 'permissions': {},
-                  'jobs': {'rollback': {'uses': relay}}}
+                  'jobs': {'rollback': {'uses': relay, 'secrets': {
+                      'DEPLOY_DISPATCH_TOKEN': '${{ secrets.DEPLOY_DISPATCH_TOKEN }}',
+                  }}}}
         path.write_text(yaml.safe_dump(caller))
         self.assertTrue(self.result(doc).wasSuccessful())
         for field, value in (
             ('on', {'push': None}),
             ('on', {'workflow_dispatch': {'inputs': {'version': {'required': True}}}}),
             ('permissions', {'contents': 'write'}),
-            ('jobs', {'rollback': {'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}),
+            ('jobs', {'rollback': {**caller['jobs']['rollback'],
+                                   'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}),
+            ('jobs', {'rollback': {'uses': relay}}),
+            ('jobs', {'rollback': {'uses': relay, 'secrets': {'DEPLOY_DISPATCH_TOKEN': '${{ secrets.OTHER }}'}}}),
             ('jobs', {'rollback': {'uses': relay, 'secrets': 'inherit'}}),
         ):
             with self.subTest(field=field, value=value):

@@ -70,7 +70,7 @@ class ProductionDispatchTests(unittest.TestCase):
 
     def test_only_current_manual_service_main_and_trusted_relay_can_publish(self):
         get = Mock(side_effect=[self.run, self.branch, self.branch, {"merge_base_commit": {"sha": self.sha}}])
-        self.assertEqual(self.publisher.authorize(self.repo, "101", "1", get), self.sha)
+        self.assertEqual(self.publisher.authorize(self.repo, "101", "1", get), ("deploy", self.sha))
         for key, value in (("event", "push"), ("status", "completed"), ("id", 102), ("run_attempt", 2),
                            ("head_branch", "test"), ("path", ".github/workflows/ci.yml"),
                            ("head_repository", {"full_name": "fork/user"}), ("referenced_workflows", [])):
@@ -84,6 +84,65 @@ class ProductionDispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.publisher.authorize(self.repo, "101", "1", Mock(side_effect=[
                 self.run, self.branch, self.branch, {"merge_base_commit": {"sha": "b" * 40}}]))
+
+    def test_rollback_is_tied_to_rollback_caller_and_its_protected_relay(self):
+        deploy, = self.run["referenced_workflows"]
+        rollback = {**deploy, "path": deploy["path"].replace("-deploy.yml", "-rollback.yml")}
+        run = {**self.run, "path": ".github/workflows/rollback.yml"}
+        for refs in ([rollback], [rollback, deploy]):
+            get = Mock(side_effect=[{**run, "referenced_workflows": refs}, self.branch, self.branch,
+                                     {"merge_base_commit": {"sha":self.sha}}])
+            self.assertEqual(self.publisher.authorize(self.repo, "101", "1", get), ("rollback", self.sha))
+        for refs in ([deploy], [{**rollback, "ref":"refs/heads/topic"}], [rollback, rollback]):
+            with self.subTest(refs=refs), self.assertRaises(ValueError):
+                self.publisher.authorize(self.repo, "101", "1",
+                    Mock(side_effect=[{**run, "referenced_workflows": refs}, self.branch]))
+
+    def test_dispatch_rollback_uses_observed_image_without_build_or_migration_inputs(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        pub = self.publisher
+        old, new = ["ghcr.io/fin-assist/infra-service-user@sha256:" + digit*64 for digit in ("1", "2")]
+        head = pub.production_rollback.Head("1.100.1", new, "deploy", self.sha, "checksum")
+        payload = {"schema": 1, "service": "user", "version": head.version,
+                   "image": new, "previous_image": old}
+        recording = {"creator": {"id": 77}, "task": "record-production-release",
+                     "environment": "production-user", "payload": payload}
+        env = dict(GITHUB_REPOSITORY="fin-assist/go-ci", GITHUB_REF="refs/heads/main",
+                   GITHUB_REF_PROTECTED="true", GITHUB_EVENT_NAME="workflow_dispatch",
+                   SERVICE_REPOSITORY=self.repo, SERVICE_RUN="101", SERVICE_ATTEMPT="1",
+                   RECEIPT_CREATOR_ID="77", DELIVERY_READ_TOKEN="read")
+        def get(path, token):
+            self.assertEqual(token, "read")
+            if path == "repos/fin-assist/infra":
+                return {"private": True}
+            if path == "repos/fin-assist/infra/branches/main":
+                return self.branch
+            if path.startswith("repos/fin-assist/infra/deployments?"):
+                return [recording]
+            raise AssertionError(path)
+        def publish(file, name, version, folder, check, helm):
+            self.assertEqual((name, version), ("production-user", "1.101.1"))
+            check()
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(pub.os.environ, env))
+            stack.enter_context(patch.object(pub.ci, "INFRA", "fin-assist/infra", create=True))
+            stack.enter_context(patch.object(pub.ci, "command", return_value=self.sha, create=True))
+            stack.enter_context(patch.object(pub.ci, "api", side_effect=get, create=True))
+            stack.enter_context(patch.object(pub, "authorize", return_value=("rollback", self.sha)))
+            stack.enter_context(patch.object(pub, "registry"))
+            stack.enter_context(patch.object(pub, "publish_chart", side_effect=publish))
+            source = stack.enter_context(patch.object(pub.production_delivery, "resolve"))
+            selected = stack.enter_context(patch.object(pub.production_rollback, "selected_release", return_value=head))
+            chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
+            pub.main()
+            self.assertEqual(chart.call_args.args[:6], ("user", old, self.sha, "1.101.1", pub.render_release, {}))
+            self.assertEqual(chart.call_args.kwargs, {"rollback": True})
+            source.assert_not_called()
+            self.assertEqual(selected.call_count, 2)
+            selected.side_effect = [head, pub.production_rollback.Head("1.120.1", new, "deploy", self.sha, "other")]
+            with self.assertRaisesRegex(pub.production_rollback.RollbackError, "changed during rollback"):
+                pub.main()
 
     def test_private_registry_rejects_public_and_existing_different_content(self):
         from types import SimpleNamespace

@@ -62,6 +62,15 @@ class ObservationTests(unittest.TestCase):
         del records["1.30.1"]  # Guard may have rejected C before its receipt.
         self.assertEqual(rollback.previous_image(head, records, B, True), A)
 
+    def test_redeployed_candidate_can_share_digest_with_previous_serving_revision(self):
+        # A previously served, B is stable, and a new release of A is now a
+        # candidate. Its former stable revision is the right rollback target.
+        head = rollback.Head("1.30.1", A, "deploy", SHA, "")
+        history = {"1.10.1": {"image": A, "previous_image": C},
+                   "1.20.1": {"image": B, "previous_image": A},
+                   "1.30.1": {"image": A, "previous_image": B}}
+        self.assertEqual(rollback.previous_image(head, history, B, True), A)
+
     def test_gated_deploy_and_rollback_completion(self):
         accepted = row(RECORD, image=C, previous_image=B)
         finish = row(FINISH, image=A, status="success", operation="rollback")

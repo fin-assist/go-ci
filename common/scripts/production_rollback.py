@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import tarfile
 import tempfile
-import time
 
 
 class RollbackError(ValueError):
@@ -133,7 +132,7 @@ def previous_image(head, history, stable_image=None, candidate=False):
     raise RollbackError("No previous distinct working image in cluster history")
 
 
-def target_for_request(head, version, sha, service, creator_id, get, *, stable_image=None, candidate=None):
+def target_for_request(head, version, sha, service, creator_id, get, *, stable_image, candidate):
     head_run, head_attempt = version_key(head.version)
     run, attempt = version_key(version)
     if (head_run, head_attempt) > (run, attempt):
@@ -142,12 +141,5 @@ def target_for_request(head, version, sha, service, creator_id, get, *, stable_i
         if head.operation != "rollback" or head.request_sha != sha:
             raise RollbackError("Existing release does not match this rollback request")
         return None  # Publishing another attempt would undo this same rollback.
-    # The selected release might have been published just before this command.
-    # Wait for its pre-migration observation, never infer the result from its tag.
-    for poll in range(25):
-        history = receipts(service, creator_id, get)
-        if candidate is not None or head.version in history:
-            return previous_image(head, history, stable_image, candidate)
-        if poll < 24:
-            time.sleep(10)
-    raise RollbackError("No cluster receipt for the current release; check the release receipt Job")
+    history = receipts(service, creator_id, get)
+    return previous_image(head, history, stable_image, candidate)

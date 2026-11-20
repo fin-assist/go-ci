@@ -261,21 +261,24 @@ class ProductionDispatchTests(unittest.TestCase):
         from unittest.mock import patch
         env = {"REGISTRY_TOKEN": "test", "REGISTRY_USER": "publisher"}
         meta = dict(name="production-user", package_type="container", visibility="private", owner={"login": "fin-assist"})
-        for selected, denied in (("1.101.1", False), ("1.102.1", False), ("1.101.1", True)):
+        for major, newest, denied in ((1, 101, False), (2, 101, False), (1, 102, False),
+                                     (2, 102, False), (1, 101, True), (2, 101, True)):
+            requested, selected, selector = f"{major}.101.1", f"{major}.{newest}.1", f"{major}.*"
             with self.subTest(selected=selected, denied=denied), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
-                file = root / "production-user-1.101.1.tgz"
+                file = root / f"production-user-{requested}.tgz"
                 file.write_bytes(b"approved")
                 stored = {}
                 def helm(cmd, **kwargs):
                     if "push" in cmd:
-                        stored["1.101.1"] = file.read_bytes()
+                        stored[requested] = file.read_bytes()
                     if "pull" in cmd:
                         wanted = cmd[cmd.index("--version") + 1]
-                        version = selected if wanted == "1.*" else wanted
+                        self.assertIn(wanted, (requested, selector))
+                        version = selected if wanted == selector else wanted
                         if denied:
                             return SimpleNamespace(returncode=1, stderr="403 forbidden")
-                        if version not in stored and wanted != "1.*":
+                        if version not in stored and wanted != selector:
                             return SimpleNamespace(returncode=1, stderr="manifest unknown")
                         (root / "pulled" / f"production-user-{version}.tgz").write_bytes(stored.get(version, b"newer"))
                     return SimpleNamespace(returncode=0)
@@ -283,11 +286,11 @@ class ProductionDispatchTests(unittest.TestCase):
                 with patch.dict(self.publisher.os.environ, env), patch.object(
                         self.publisher.ci, "api", return_value=meta, create=True), patch.object(
                         self.publisher.subprocess, "run", side_effect=helm):
-                    if denied or selected != "1.101.1":
+                    if denied or selected != requested:
                         with self.assertRaises(ValueError):
-                            self.publisher.publish_chart(file, "production-user", "1.101.1", root, check)
+                            self.publisher.publish_chart(file, "production-user", requested, root, check)
                     else:
-                        self.publisher.publish_chart(file, "production-user", "1.101.1", root, check)
+                        self.publisher.publish_chart(file, "production-user", requested, root, check)
                 self.assertEqual(check.call_count, 0 if denied else 1)
                 self.assertEqual(bool(stored), not denied)
 

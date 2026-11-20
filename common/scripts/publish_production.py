@@ -58,8 +58,8 @@ def publish_chart(file, name, version, folder, check):
         raise ValueError("GHCR authentication failed")
     pulled = folder / "pulled"
     pulled.mkdir()
-    def pull():
-        return helm(["pull", "oci://ghcr.io/fin-assist/" + name, "--version", version, "--destination", str(pulled)])
+    def pull(selector=version):
+        return helm(["pull", "oci://ghcr.io/fin-assist/" + name, "--version", selector, "--destination", str(pulled)])
     existing = pull()
     if existing.returncode:
         if not re.search(r"manifest unknown|manifest_unknown|: not found|404 not found", existing.stderr, re.I):
@@ -69,6 +69,11 @@ def publish_chart(file, name, version, folder, check):
             raise ValueError("GHCR release publication or read-back failed")
     if (pulled / file.name).read_bytes() != file.read_bytes():
         raise ValueError("Release tag content differs from the verified chart")
+    # A re-run of an older manual run can still point at today's main. Report it
+    # as superseded when Argo's version range already selects a newer release.
+    (pulled / file.name).unlink()
+    if pull("1.*").returncode or not (pulled / file.name).is_file() or (pulled / file.name).read_bytes() != file.read_bytes():
+        raise ValueError("Argo CD selects a different release version")
 
 
 def main():

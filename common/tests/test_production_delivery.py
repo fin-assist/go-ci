@@ -107,3 +107,39 @@ class ProductionDispatchTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "differs"):
                     self.publisher.publish_chart(file, "production-user", "1.101.1", root, Mock())
                 self.assertFalse(any("push" in call.args[0] for call in calls.call_args_list))
+
+    def test_publication_verifies_bytes_and_argo_version_selection(self):
+        from types import SimpleNamespace
+        import tempfile
+        from unittest.mock import patch
+        env = {"REGISTRY_TOKEN": "test", "REGISTRY_USER": "publisher"}
+        meta = dict(name="production-user", package_type="container", visibility="private", owner={"login": "fin-assist"})
+        for selected, denied in (("1.101.1", False), ("1.102.1", False), ("1.101.1", True)):
+            with self.subTest(selected=selected, denied=denied), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                file = root / "production-user-1.101.1.tgz"
+                file.write_bytes(b"approved")
+                stored = {}
+                def helm(cmd, **kwargs):
+                    if "push" in cmd:
+                        stored["1.101.1"] = file.read_bytes()
+                    if "pull" in cmd:
+                        wanted = cmd[cmd.index("--version") + 1]
+                        version = selected if wanted == "1.*" else wanted
+                        if denied:
+                            return SimpleNamespace(returncode=1, stderr="403 forbidden")
+                        if version not in stored and wanted != "1.*":
+                            return SimpleNamespace(returncode=1, stderr="manifest unknown")
+                        (root / "pulled" / f"production-user-{version}.tgz").write_bytes(stored.get(version, b"newer"))
+                    return SimpleNamespace(returncode=0)
+                check = Mock()
+                with patch.dict(self.publisher.os.environ, env), patch.object(
+                        self.publisher.ci, "api", return_value=meta, create=True), patch.object(
+                        self.publisher.subprocess, "run", side_effect=helm):
+                    if denied or selected != "1.101.1":
+                        with self.assertRaises(ValueError):
+                            self.publisher.publish_chart(file, "production-user", "1.101.1", root, check)
+                    else:
+                        self.publisher.publish_chart(file, "production-user", "1.101.1", root, check)
+                self.assertEqual(check.call_count, 0 if denied else 1)
+                self.assertEqual(bool(stored), not denied)

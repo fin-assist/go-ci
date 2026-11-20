@@ -139,7 +139,8 @@ class ProductionDispatchTests(unittest.TestCase):
                 return [recording]
             raise AssertionError(path)
         def publish(file, name, version, folder, check, helm):
-            self.assertEqual((name, version), ("production-user", "1.101.1"))
+            self.assertEqual(name, "production-user")
+            self.assertIn(version, ("1.101.1", "2.101.1"))
             check()
         with ExitStack() as stack:
             stack.enter_context(patch.dict(pub.os.environ, env))
@@ -149,17 +150,87 @@ class ProductionDispatchTests(unittest.TestCase):
             stack.enter_context(patch.object(pub, "authorize", return_value=("rollback", self.sha)))
             stack.enter_context(patch.object(pub, "registry"))
             stack.enter_context(patch.object(pub, "publish_chart", side_effect=publish))
+            stack.enter_context(patch.object(pub.production_chart, "observation"))
+            wait = stack.enter_context(patch.object(pub.production_observation, "wait",
+                                                    return_value={"stable_image": new, "candidate": False}))
             source = stack.enter_context(patch.object(pub.production_delivery, "resolve"))
             selected = stack.enter_context(patch.object(pub.production_rollback, "selected_release", return_value=head))
             chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
             pub.main()
             self.assertEqual(chart.call_args.args[:5], ("user", old, self.sha, "1.101.1", pub.render_release))
-            self.assertEqual(chart.call_args.kwargs, {"rollback": True})
+            self.assertEqual(chart.call_args.kwargs, {"rollback": True, "expected_stable": new})
+            self.assertEqual(wait.call_args.kwargs, {"image": old})
             source.assert_not_called()
             self.assertEqual(selected.call_count, 2)
             selected.side_effect = [head, pub.production_rollback.Head("1.120.1", new, "deploy", self.sha, "other")]
             with self.assertRaisesRegex(pub.production_rollback.RollbackError, "changed during rollback"):
                 pub.main()
+
+    def run_service_command(self, pub, stack, operation, observation):
+        from unittest.mock import patch
+        env = dict(GITHUB_REPOSITORY="fin-assist/go-ci", GITHUB_REF="refs/heads/main",
+                   GITHUB_REF_PROTECTED="true", GITHUB_EVENT_NAME="workflow_dispatch", SERVICE_REPOSITORY=self.repo,
+                   SERVICE_RUN="101", SERVICE_ATTEMPT="2", RECEIPT_CREATOR_ID="77", DELIVERY_READ_TOKEN="read")
+        stack.enter_context(patch.dict(pub.os.environ, env))
+        stack.enter_context(patch.object(pub.ci, "INFRA", "fin-assist/infra", create=True))
+        stack.enter_context(patch.object(pub.ci, "command", return_value=self.sha, create=True))
+        stack.enter_context(patch.object(pub.ci, "api", side_effect=[{"private": True}, self.branch], create=True))
+        stack.enter_context(patch.object(pub, "authorize", return_value=(operation, self.sha)))
+        stack.enter_context(patch.object(pub, "registry"))
+        stack.enter_context(patch.object(pub.production_chart, "observation"))
+        wait = stack.enter_context(patch.object(pub.production_observation, "wait", return_value=observation))
+        publish = stack.enter_context(patch.object(pub, "publish_chart"))
+        return wait, publish
+
+    def test_active_candidate_stops_deploy_before_app_release(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        pub = self.publisher
+        image = "ghcr.io/fin-assist/infra-service-user@sha256:" + "9"*64
+        with ExitStack() as stack:
+            wait, publish = self.run_service_command(pub, stack, "deploy", {"stable_image": image, "candidate": True})
+            source = stack.enter_context(patch.object(pub.production_delivery, "resolve"))
+            with self.assertRaisesRegex(pub.production_rollback.RollbackError, "active candidate"):
+                pub.main()
+            self.assertEqual([call.args[2] for call in publish.call_args_list], ["2.101.2"])
+            source.assert_not_called()
+            wait.assert_called_once()
+
+    def test_no_candidate_deploy_accepts_first_install_and_existing_stable(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        pub = self.publisher
+        image = "ghcr.io/fin-assist/infra-service-user@sha256:" + "9"*64
+        for stable in (None, image):
+            with self.subTest(stable=stable), ExitStack() as stack:
+                wait, publish = self.run_service_command(pub, stack, "deploy", {"stable_image": stable, "candidate": False})
+                stack.enter_context(patch.object(pub.production_delivery, "resolve", return_value={"image": image}))
+                chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
+                pub.main()
+                self.assertEqual([call.args[2] for call in publish.call_args_list], ["2.101.2", "1.101.2"])
+                self.assertEqual(chart.call_args.kwargs, {"expected_stable": stable, "rollback": False})
+                self.assertEqual(wait.call_args.kwargs, {"image": image})
+
+    def test_rerunning_one_rollback_preserves_target_after_partial_or_complete_switch(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        pub = self.publisher
+        old, target = ["ghcr.io/fin-assist/infra-service-user@sha256:" + digit*64 for digit in ("1", "2")]
+        head = pub.production_rollback.Head("1.101.1", target, "rollback", self.sha, "digest")
+        for stable, candidate, previous, publish_app in (
+                (target, False, {"status": "success"}, False),
+                (old, True, None, True), (old, True, {"status": "failure"}, True)):
+            with self.subTest(stable=stable, previous=previous), ExitStack() as stack:
+                wait, publish = self.run_service_command(pub, stack, "rollback", {"stable_image": stable, "candidate": candidate})
+                stack.enter_context(patch.object(pub.production_rollback, "selected_release", return_value=head))
+                stack.enter_context(patch.object(pub.production_observation, "event", return_value=previous))
+                chart = stack.enter_context(patch.object(pub.production_chart, "chart"))
+                pub.main()
+                self.assertEqual(publish.call_count, 2 if publish_app else 1)
+                if publish_app:
+                    self.assertEqual((chart.call_args.args[1], wait.call_args.kwargs["image"]), (target, target))
+                else:
+                    chart.assert_not_called()
 
     def test_private_registry_rejects_public_and_existing_different_content(self):
         from types import SimpleNamespace
@@ -340,6 +411,7 @@ class ReleaseManifestTests(unittest.TestCase):
         with patch.object(sys, "path", [str(scripts), *sys.path]):
             from production_chart import chart
         renderer = Mock(SERVICES=("user",), PEERS={"user"})
+        renderer.rollback_finish.return_value = {"kind": "Job", "metadata": {"name": "finish"}}
         renderer.release_receipt.return_value = {"kind": "Job", "metadata": {"name": "receipt"}}
         renderer.rollout.return_value = {"kind": "Rollout", "spec": {
             "strategy": {"blueGreen": {"activeService": "user", "autoPromotionEnabled": True}}}}
@@ -353,7 +425,8 @@ class ReleaseManifestTests(unittest.TestCase):
                 self.assertEqual(manifest["annotations"]["plainfin.ru/operation"], "rollback")
                 self.assertEqual(manifest["appVersion"], "b" * 64)
                 renderer.migration.assert_not_called()
-                renderer.release_receipt.assert_called_with("user", image, "1.25.1", "rollback")
+                renderer.release_receipt.assert_called_with("user", image, "1.25.1", "rollback", expected_stable=None)
+                renderer.rollback_finish.assert_called_with("user", image, "1.25.1")
                 renderer.rollout.assert_called_with("user", image)
                 with self.assertRaises(ValueError):
                     chart("user", image.replace(package+"@", "assistant@"), sha, "1.25.1", renderer, tmp, rollback=True)

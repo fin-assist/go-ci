@@ -9,7 +9,7 @@ jobs:
   release:
     environment: production-request
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Require a manual run on protected main
         env:
@@ -27,10 +27,17 @@ jobs:
             -f ref=main -f "inputs[repository]=$GITHUB_REPOSITORY" \
             -f "inputs[run]=$GITHUB_RUN_ID" -f "inputs[attempt]=$GITHUB_RUN_ATTEMPT" --jq .workflow_run_id)
           [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
-          for ((i=0; i<160; i++)); do
-            result=$(gh api "repos/fin-assist/go-ci/actions/runs/$run_id" --jq 'if .status == "completed" then .conclusion else "pending" end')
+          for ((i=0; i<250; i++)); do
+            if ! result=$(gh api "repos/fin-assist/go-ci/actions/runs/$run_id" --jq 'if .status == "completed" then .conclusion else "pending" end' 2>"$RUNNER_TEMP/publisher-status-error"); then
+              if ((i < 6)) && grep -q 'HTTP 404' "$RUNNER_TEMP/publisher-status-error"; then
+                sleep 10
+                continue
+              fi
+              echo "::error::Could not read the central production request"
+              exit 1
+            fi
             case "$result" in
-              success) echo "Request published to GHCR. Check the production Application in Argo CD for the outcome." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+              success) echo "The cluster acknowledged the production command. See the service Application in Argo CD." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
               pending) sleep 10 ;;
               *) echo "::error::Production request publication failed"; exit 1 ;;
             esac

@@ -1,0 +1,60 @@
+"""Wait for cluster decisions authenticated by the private receipt writer."""
+import time
+
+from production_rollback import RollbackError, receipts, trusted_payloads, validate_image
+
+
+def event(service, version, operation, creator, task, get, *, image=None):
+    match = None
+    for entry in trusted_payloads(service, creator, task, get):
+        if entry["version"] != version:
+            continue
+        if entry.get("operation") != operation:
+            raise RollbackError("Cluster receipt operation differs from the command")
+        common = {"schema", "service", "operation", "version"}
+        if task == "observe-production-release":
+            if set(entry) != common | {"stable_image", "candidate"} or type(entry["candidate"]) is not bool:
+                raise RollbackError("Invalid cluster observation")
+            if entry["stable_image"] is not None:
+                validate_image(service, entry["stable_image"])
+        elif task == "reject-production-observation":
+            if set(entry) != common | {"status"} or entry["status"] != "failure":
+                raise RollbackError("Invalid observation failure")
+        else:
+            if (set(entry) != common | {"image", "status"} or entry["image"] != image
+                    or entry["status"] not in ("success", "failure")
+                    or task == "reject-production-release" and entry["status"] != "failure"):
+                raise RollbackError("Invalid cluster outcome")
+        if match is not None and match != entry:
+            raise RollbackError("Conflicting cluster signals for the same command")
+        match = entry
+    return match
+
+
+def wait(service, version, operation, creator, get, *, image=None):
+    for poll in range(61):
+        if image is None:
+            if event(service, version, operation, creator, "reject-production-observation", get):
+                raise RollbackError("Cluster could not establish a stable observation for this command")
+            observed = event(service, version, operation, creator, "observe-production-release", get)
+            if observed is not None:
+                return observed
+        else:
+            rejected = event(service, version, operation, creator, "reject-production-release", get, image=image)
+            if rejected:
+                raise RollbackError("Cluster rejected this release after observing the active service")
+            if operation == "rollback":
+                result = event(service, version, operation, creator, "finish-production-rollback", get, image=image)
+                if result:
+                    if result["status"] == "failure":
+                        raise RollbackError("Cluster could not complete this rollback")
+                    return result
+            else:
+                accepted = receipts(service, creator, get).get(version)
+                if accepted:
+                    if accepted["image"] != image:
+                        raise RollbackError("Accepted service image differs from the requested image")
+                    return accepted
+        if poll < 60:
+            time.sleep(10)
+    raise RollbackError("Timed out waiting for the cluster receipt; inspect the service Application in Argo CD")

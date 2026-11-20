@@ -18,7 +18,7 @@ jobs:
     if: github.repository == 'fin-assist/go-ci' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     environment: production-delivery
-    timeout-minutes: 20
+    timeout-minutes: 35
     concurrency:
       group: publish-production-${{ inputs.repository }}
       cancel-in-progress: false
@@ -40,6 +40,7 @@ jobs:
             /scripts/service_delivery.py
             /apps/render_release.py
             /apps/production_release_receipt.py
+            /apps/production_release_control.py
       - name: Install Helm
         working-directory: ${{ runner.temp }}
         run: |

@@ -76,54 +76,64 @@ def selected_release(helm, service, folder):
                 annotations.get("plainfin.ru/request-sha", ""), hashlib.sha256(raw).hexdigest())
 
 
-def receipts(service, creator_id, get):
+def trusted_payloads(service, creator_id, task, get):
     if not isinstance(creator_id, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", creator_id):
         raise RollbackError("Configure the dedicated production receipt writer's numeric GitHub ID")
     environment = "production-" + service
-    path = f"repos/fin-assist/infra/deployments?environment={environment}&task=record-production-release"
-    history = {}
+    path = f"repos/fin-assist/infra/deployments?environment={environment}&task={task}"
     page = 1
     while True:
         rows = get(f"{path}&per_page=100&page={page}")
         for row in rows:
             if ((row.get("creator") or {}).get("id") != int(creator_id) or row.get("environment") != environment or
-                    row.get("task") != "record-production-release"):
+                    row.get("task") != task):
                 continue
             entry = row.get("payload")
-            if (not isinstance(entry, dict) or set(entry) != {"schema", "service", "version", "image", "previous_image"} or
-                    type(entry["schema"]) is not int or entry["schema"] != 1 or entry["service"] != service):
+            if not isinstance(entry, dict) or type(entry.get("schema")) is not int or entry["schema"] != 1 or entry.get("service") != service:
                 raise RollbackError("Invalid cluster release receipt")
-            version = entry["version"]
-            version_key(version)
-            validate_image(service, entry["image"])
-            if entry["previous_image"] is not None:
-                validate_image(service, entry["previous_image"])
-            if version in history and history[version] != entry:
-                raise RollbackError("Conflicting cluster receipts for one release")
-            history[version] = entry
+            version_key(entry.get("version"))
+            yield entry
         if len(rows) < 100:
-            return history
+            return
         page += 1
 
 
-def previous_image(head, history):
-    current = history[head.version]
-    if current["image"] != head.image:
+def receipts(service, creator_id, get):
+    history = {}
+    for entry in trusted_payloads(service, creator_id, "record-production-release", get):
+        if set(entry) != {"schema", "service", "version", "image", "previous_image"}:
+            raise RollbackError("Invalid cluster release receipt")
+        version = entry["version"]
+        validate_image(service, entry["image"])
+        if entry["previous_image"] is not None:
+            validate_image(service, entry["previous_image"])
+        if version in history and history[version] != entry:
+            raise RollbackError("Conflicting cluster receipts for one release")
+        history[version] = entry
+    return history
+
+
+def previous_image(head, history, stable_image=None, candidate=False):
+    current = history.get(head.version)
+    if current is not None and current["image"] != head.image:
         raise RollbackError("Cluster receipt image differs from the selected GHCR chart")
     if any(version_key(key) > version_key(head.version) for key in history):
         raise RollbackError("GHCR head is older than an observed cluster release")
-    if current["previous_image"] is None and head.operation != "rollback":
-        raise RollbackError("This release has no previously active production image")
+    # A failed transition with no candidate is recovered by reasserting the
+    # current working image. A live candidate is discarded AND the stable
+    # version is rolled back to the previous distinct working image.
+    if stable_image and not candidate and head.image != stable_image:
+        return stable_image
     # Only previous_image was actually observed serving traffic. A desired image in
     # any receipt might have failed migrations or readiness and is not evidence.
     for version in sorted(history, key=version_key, reverse=True):
-        candidate = history[version]["previous_image"]
-        if candidate and candidate != head.image:
-            return candidate
+        previous = history[version]["previous_image"]
+        if previous and previous != (stable_image or head.image):
+            return previous
     raise RollbackError("No previous distinct working image in cluster history")
 
 
-def target_for_request(head, version, sha, service, creator_id, get):
+def target_for_request(head, version, sha, service, creator_id, get, *, stable_image=None, candidate=None):
     head_run, head_attempt = version_key(head.version)
     run, attempt = version_key(version)
     if (head_run, head_attempt) > (run, attempt):
@@ -136,8 +146,8 @@ def target_for_request(head, version, sha, service, creator_id, get):
     # Wait for its pre-migration observation, never infer the result from its tag.
     for poll in range(25):
         history = receipts(service, creator_id, get)
-        if head.version in history:
-            return previous_image(head, history)
+        if candidate is not None or head.version in history:
+            return previous_image(head, history, stable_image, candidate)
         if poll < 24:
             time.sleep(10)
     raise RollbackError("No cluster receipt for the current release; check the release receipt Job")

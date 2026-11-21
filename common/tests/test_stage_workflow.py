@@ -57,7 +57,7 @@ case "$*" in
         fi
         echo "${CONCLUSION:-success}"
         ;;
-    *) exit 9 ;;
+    *) echo unexpected >> "$RUNNER_TEMP/calls"; exit 9 ;;
 esac
 """,
         }

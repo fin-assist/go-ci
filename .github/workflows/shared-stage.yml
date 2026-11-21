@@ -1,0 +1,82 @@
+name: Request a stage operation
+
+on:
+  workflow_call:
+    inputs:
+      operation:
+        required: true
+        type: string
+    secrets:
+      STAGE_DISPATCH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  request:
+    environment: stage-request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 58
+    steps:
+      - name: Check the service workflow and protected main
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PROTECTED: ${{ github.ref_protected }}
+          OPERATION: ${{ inputs.operation }}
+          WORKFLOW: ${{ github.workflow_ref }}
+        run: |
+          case "$GITHUB_REPOSITORY" in
+            fin-assist/user|fin-assist/analytics|fin-assist/bank-statement-data|fin-assist/assistant|fin-assist/bank-bff) ;;
+            *) echo "::error::This repository has no systemd stage service"; exit 1 ;;
+          esac
+          case "$OPERATION" in deploy|rollback) ;; *) exit 1 ;; esac
+          if [[ "$EVENT" != workflow_dispatch || "$REF" != refs/heads/main || "$PROTECTED" != true ||
+                "$WORKFLOW" != "$GITHUB_REPOSITORY/.github/workflows/$OPERATION-stage.yml@refs/heads/main" ]]; then
+            echo "::error::Run this stage workflow on the service's protected main"
+            exit 1
+          fi
+      - name: Request the operation and link its report
+        env:
+          GH_TOKEN: ${{ secrets.STAGE_DISPATCH_TOKEN }}
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::STAGE_DISPATCH_TOKEN is missing"
+            exit 1
+          fi
+          if ! run_id=$(timeout 30 gh api -X POST -H 'X-GitHub-Api-Version: 2026-03-10' \
+                repos/fin-assist/infra/actions/workflows/stage-service.yml/dispatches \
+                -f ref=main -f "inputs[repository]=$GITHUB_REPOSITORY" -f "inputs[operation]=$OPERATION" \
+                -f "inputs[run]=$GITHUB_RUN_ID" -f "inputs[attempt]=$GITHUB_RUN_ATTEMPT" \
+                --jq .workflow_run_id) || [[ ! "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Could not dispatch the stage operation in infra"
+            exit 1
+          fi
+          printf '[Stage operation and deployment report](https://github.com/fin-assist/infra/actions/runs/%s)\n' \
+            "$run_id" >> "$GITHUB_STEP_SUMMARY"
+          deadline=$((SECONDS + 55 * 60))
+          for ((i=0; SECONDS < deadline; i++)); do
+            if ! result=$(timeout 20 gh api "repos/fin-assist/infra/actions/runs/$run_id" \
+                --jq 'if .status == "completed" then .conclusion else "pending" end' 2>"$RUNNER_TEMP/stage-status-error"); then
+              if ((i < 6)) && grep -q 'HTTP 404' "$RUNNER_TEMP/stage-status-error"; then
+                sleep 5
+                continue
+              fi
+              echo "::error::Could not read the infra stage run; check the linked run before retrying"
+              exit 1
+            fi
+            case "$result" in
+              success)
+                verified=$(timeout 20 gh api "repos/fin-assist/infra/actions/runs/$run_id/jobs?per_page=100" \
+                  --jq '[.jobs[] | select(.name == "apply" and .status == "completed" and .conclusion == "success")] | length')
+                if [[ "$verified" == 1 ]]; then exit 0; fi
+                echo "::error::The infra stage job did not run successfully"
+                exit 1
+                ;;
+              pending) sleep 10 ;;
+              *) echo "::error::The stage operation failed; see the linked deployment report"; exit 1 ;;
+            esac
+          done
+          echo "::error::Timed out waiting for the linked stage operation"
+          exit 1

@@ -29,7 +29,7 @@ PREPARE_EVENTS = {'pull_request_target': {
 
 QUALITY_MODULES = {'github.com/fin-assist/' + name for name in (
     'go-service-template', 'bank-bff', 'user', 'bank-statement-data', 'analytics', 'assistant')}
-PRODUCTION_MODULES = QUALITY_MODULES - {'github.com/fin-assist/go-service-template'}
+DEPLOYMENT_MODULES = QUALITY_MODULES - {'github.com/fin-assist/go-service-template'}
 PRODUCTION_TRIGGER = {'workflow_run': {'workflows': ['CI'], 'branches': ['main'], 'types': ['completed']}}
 PREPARE_PRODUCTION = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
 PUBLISH_CONDITION = ("github.event.workflow_run.conclusion == 'success' && "
@@ -190,7 +190,21 @@ def suite(root, common):
                 }
                 for path in (root / '.github/workflows').glob('*.y*ml'):
                     document = yaml.safe_load(path.read_text())
-                    if path.name in ('deploy.yml', 'rollback.yml') and modules[0] in PRODUCTION_MODULES:
+                    if path.name in ('deploy-stage.yml', 'rollback-stage.yml') and modules[0] in DEPLOYMENT_MODULES:
+                        operation = path.stem.removesuffix('-stage')
+                        dispatch = dict(document)
+                        events = dispatch.pop(True if True in dispatch else 'on', None)
+                        self.assertEqual(events, {'workflow_dispatch': None})
+                        self.assertEqual(dispatch, {
+                            'name': operation.capitalize() + ' stage', 'permissions': {},
+                            'jobs': {operation: {
+                                'uses': SOURCE + 'shared-stage.yml@main',
+                                'with': {'operation': operation},
+                                'secrets': {'STAGE_DISPATCH_TOKEN': '${{ secrets.STAGE_DISPATCH_TOKEN }}'},
+                            }},
+                        })
+                        continue
+                    if path.name in ('deploy.yml', 'rollback.yml') and modules[0] in DEPLOYMENT_MODULES:
                         operation = path.stem
                         dispatch = dict(document)
                         # PyYAML's default loader parses an unquoted "on" as True.
@@ -225,7 +239,7 @@ def suite(root, common):
             if production_file.is_file():
                 self.assertEqual(enabled, PREPARE_PRODUCTION)
                 self.assertEqual(manifest['profile'], 'service')
-                self.assertIn(modules[0], PRODUCTION_MODULES)
+                self.assertIn(modules[0], DEPLOYMENT_MODULES)
                 self.assertEqual(workflow.get('name'), PRODUCTION_TRIGGER['workflow_run']['workflows'][0])
                 self.assertEqual(workflow['jobs']['image-check']['with']['service'], modules[0].rsplit('/', 1)[1])
                 production = yaml.safe_load(production_file.read_text())

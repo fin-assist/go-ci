@@ -12,6 +12,10 @@ This repository owns reusable Go CI, lint profiles and their regression tests. I
 - FIN-524 relay callers are limited to the six service profiles; libraries keep their existing workflows.
   Preserve bank-bff without migrations, its separate Qase 90 context and sequential Go suites.
   Relayed callers must not retain source private-input producers, binary uploads or production publishers.
+- FIN-540 stage callers use `shared-stage.yml` from the five systemd-stage service repositories.
+  Forward the manual run identity only from protected main. Infra authenticates the request and owns
+  artifact selection, SSH and the report. Keep the stage dispatch credential in the main-only
+  `stage-request` Environment, separate from production.
 - Ordinary source PRs require owner authorization to merge. Do not change protections or secrets.
 - Request both reviewers with an intentional comment beginning `@codex @claude`; include Security and Tests. After a pushed fix, reply/resolve findings and request both immediately without waiting for CI.
 - FIN-456 owns one shared Renovate controller/regression suite in `common/renovate/`; `.github/renovate-policy.json`,

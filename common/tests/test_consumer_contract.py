@@ -154,6 +154,34 @@ class ConsumerContractTests(unittest.TestCase):
         path.rename(path.with_name('other.yml'))
         self.assertFalse(self.result(doc).wasSuccessful())
 
+    def test_stage_workflows_allow_only_the_exact_manual_stage_callers(self):
+        doc = self.relay_fixture('github.com/fin-assist/assistant')
+        folder = self.root / '.github/workflows'
+        for operation in ('deploy', 'rollback'):
+            path = folder / (operation + '-stage.yml')
+            call = {
+                'uses': CONTRACT.SOURCE + 'shared-stage.yml@main',
+                'with': {'operation': operation},
+                'secrets': {'STAGE_DISPATCH_TOKEN': '${{ secrets.STAGE_DISPATCH_TOKEN }}'},
+            }
+            caller = {'name': operation.capitalize() + ' stage', 'on': {'workflow_dispatch': None},
+                      'permissions': {}, 'jobs': {operation: call}}
+            with self.subTest(operation=operation):
+                path.write_text(yaml.safe_dump(caller))
+                self.assertTrue(self.result(doc).wasSuccessful())
+                for variant in ({'on': {'push': None}}, {'permissions': {'contents': 'write'}},
+                                {'jobs': {operation: {**call, 'with': {'operation': 'other'}}}},
+                                {'jobs': {operation: {**call, 'secrets': 'inherit'}}}):
+                    path.write_text(yaml.safe_dump(caller | variant))
+                    self.assertFalse(self.result(doc).wasSuccessful(), variant)
+                path.write_text(yaml.safe_dump(caller))
+                renamed = path.with_name('other.yml')
+                path.rename(renamed)
+                self.assertFalse(self.result(doc).wasSuccessful())
+                renamed.rename(path)
+        template = self.relay_fixture('github.com/fin-assist/go-service-template')
+        self.assertFalse(self.result(template).wasSuccessful())
+
     def test_rollback_requires_its_own_protected_relay_and_manual_trigger(self):
         doc = self.relay_fixture('github.com/fin-assist/user')
         path = self.root / '.github/workflows/rollback.yml'

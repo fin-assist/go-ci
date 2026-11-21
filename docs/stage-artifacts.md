@@ -48,5 +48,10 @@ resolver и передать `--root` общему скрипту. Импорт/
 Оба вызывают `shared-stage.yml` на защищённой `main`. Общий workflow передаёт в `infra`
 идентификатор вызова и операцию, ждёт результата и добавляет ссылку на отчёт в summary.
 Артефакт выбирает `infra` из существующей приватной публикации CI. Для подключения нужен
-`STAGE_DISPATCH_TOKEN` в `stage-request` каждого сервиса. Порядок активации, миграции и
-восстановление описаны в [инструкции stage](https://github.com/fin-assist/infra/tree/main/stage#service-actions-fin-540).
+`STAGE_DISPATCH_TOKEN` в `stage-request` каждого сервиса, ограниченном веткой `main`.
+Используйте fine-grained токен или GitHub App с доступом только к `fin-assist/infra`,
+`Actions: Read and write` и `Metadata: Read`. GitHub выдаёт право Actions на репозиторий
+целиком. Токен позволяет отправлять dispatch и управлять запусками других workflow в
+`infra`, поэтому храните его только в защищённом stage Environment. Отдельный токен
+production в это окружение не передаётся. Порядок активации, миграции и восстановление
+описаны в [инструкции stage](https://github.com/fin-assist/infra/tree/main/stage#service-actions-fin-540).

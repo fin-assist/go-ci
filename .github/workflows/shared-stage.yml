@@ -55,7 +55,8 @@ jobs:
           fi
           printf '[Stage operation and deployment report](https://github.com/fin-assist/infra/actions/runs/%s)\n' \
             "$run_id" >> "$GITHUB_STEP_SUMMARY"
-          for ((i=0; i<300; i++)); do
+          deadline=$((SECONDS + 55 * 60))
+          for ((i=0; SECONDS < deadline; i++)); do
             if ! result=$(timeout 20 gh api "repos/fin-assist/infra/actions/runs/$run_id" \
                 --jq 'if .status == "completed" then .conclusion else "pending" end' 2>"$RUNNER_TEMP/stage-status-error"); then
               if ((i < 6)) && grep -q 'HTTP 404' "$RUNNER_TEMP/stage-status-error"; then

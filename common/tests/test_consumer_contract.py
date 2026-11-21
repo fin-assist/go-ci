@@ -171,7 +171,12 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertTrue(self.result(doc).wasSuccessful())
                 for variant in ({'on': {'push': None}}, {'permissions': {'contents': 'write'}},
                                 {'jobs': {operation: {**call, 'with': {'operation': 'other'}}}},
-                                {'jobs': {operation: {**call, 'secrets': 'inherit'}}}):
+                                {'jobs': {operation: {**call, 'secrets': 'inherit'}}},
+                                {'jobs': {operation: {**call, 'secrets': {
+                                    'DEPLOY_DISPATCH_TOKEN': '${{ secrets.DEPLOY_DISPATCH_TOKEN }}'}}}},
+                                {'jobs': {operation: {**call, 'uses': CONTRACT.SOURCE + 'shared-production-deploy.yml@main'}}},
+                                {'jobs': {operation: {**call, 'uses': CONTRACT.SOURCE + 'shared-stage.yml@' + PIN}}},
+                                {'jobs': {operation: call, 'extra': call}}, {'name': 'Stage operation'}):
                     path.write_text(yaml.safe_dump(caller | variant))
                     self.assertFalse(self.result(doc).wasSuccessful(), variant)
                 path.write_text(yaml.safe_dump(caller))

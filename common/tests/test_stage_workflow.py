@@ -20,6 +20,7 @@ class StageWorkflowTests(unittest.TestCase):
                         RUNNER_TEMP=str(self.directory), GITHUB_STEP_SUMMARY=str(self.directory / "summary"),
                         GITHUB_REPOSITORY="fin-assist/assistant", GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2",
                         GH_TOKEN="synthetic", FIRST_ERROR="", CONCLUSION="success", APPLY_SUCCEEDED="1",
+                        DISPATCH_ID="456", DISPATCH_FAIL="0", ALL_NOT_FOUND="0", PENDING_FIRST="0",
                         EVENT="workflow_dispatch", REF="refs/heads/main", PROTECTED="true",
                         OPERATION="deploy", WORKFLOW="fin-assist/assistant/.github/workflows/deploy-stage.yml@refs/heads/main")
         scripts = {
@@ -30,7 +31,8 @@ case "$*" in
     *'/dispatches '*)
         echo dispatch >> "$RUNNER_TEMP/calls"
         printf '%s\\n' "$@" > "$RUNNER_TEMP/args"
-        echo 456
+        [[ "$DISPATCH_FAIL" == 0 ]] || exit 1
+        printf '%s\\n' "$DISPATCH_ID"
         ;;
     *'/jobs?'*)
         echo jobs >> "$RUNNER_TEMP/calls"
@@ -39,6 +41,15 @@ case "$*" in
         ;;
     *'/runs/456 '*)
         echo get >> "$RUNNER_TEMP/calls"
+        if [[ "$ALL_NOT_FOUND" == 1 ]]; then
+            echo "HTTP 404" >&2
+            exit 1
+        fi
+        if [[ "$PENDING_FIRST" == 1 && ! -e "$RUNNER_TEMP/pending" ]]; then
+            touch "$RUNNER_TEMP/pending"
+            echo pending
+            exit 0
+        fi
         if [[ -n "$FIRST_ERROR" && ! -e "$RUNNER_TEMP/first-get" ]]; then
             touch "$RUNNER_TEMP/first-get"
             echo "HTTP $FIRST_ERROR" >&2
@@ -101,3 +112,17 @@ esac
         self.assertEqual(self.calls(), ["dispatch", "get", "jobs"])
         self.assertNotEqual(self.shell(self.dispatch, FIRST_ERROR="403").returncode, 0)
         self.assertEqual(self.calls(), ["dispatch", "get"])
+
+    def test_rejects_invalid_dispatch_ids_and_post_failure(self):
+        for dispatch_id in ("", "null", "0", "12x"):
+            with self.subTest(dispatch_id=dispatch_id):
+                self.assertNotEqual(self.shell(self.dispatch, DISPATCH_ID=dispatch_id).returncode, 0)
+                self.assertEqual(self.calls(), ["dispatch"])
+        self.assertNotEqual(self.shell(self.dispatch, DISPATCH_FAIL="1").returncode, 0)
+        self.assertEqual(self.calls(), ["dispatch"])
+
+    def test_persistent_404_fails_and_pending_run_can_succeed(self):
+        self.assertNotEqual(self.shell(self.dispatch, ALL_NOT_FOUND="1").returncode, 0)
+        self.assertEqual(self.calls(), ["dispatch", *["get"] * 7])
+        self.assertEqual(self.shell(self.dispatch, PENDING_FIRST="1").returncode, 0)
+        self.assertEqual(self.calls(), ["dispatch", "get", "get", "jobs"])

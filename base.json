@@ -4,6 +4,21 @@
   ],
   "packageRules": [
     {
+      "description": "FIN-504: batch ordinary updates in the weekly window",
+      "matchPackageNames": [
+        "*"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "groupName": "weekly dependencies",
+      "groupSlug": "weekly-dependencies"
+    },
+    {
       "description": "Go compiler and toolchain directives remain manual",
       "matchManagers": [
         "gomod"

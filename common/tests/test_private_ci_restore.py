@@ -265,8 +265,13 @@ class PrivateInputRestoreTests(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
         steps = workflow["jobs"]["prepare"]["steps"]
         gate = next(step for step in steps if step.get("id") == "organization-reader")
+        prefetch = next(step for step in steps if step.get("name") == "Prefetch checksum-locked private modules")
         recheck = next(step for step in steps if step.get("name") == "Verify the destination still has private visibility")
         upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
+        condition = "steps.organization-reader.outputs.enabled == 'true'"
+        self.assertEqual(prefetch["env"]["ORGANIZATION_READER"], "${{ " + condition + " }}")
+        self.assertEqual(recheck["if"], condition)
+        self.assertFalse(recheck.get("continue-on-error", False))
         self.assertLess(steps.index(recheck), steps.index(upload))
         fixtures = '''
 timeout() { shift; "$@"; }
@@ -275,10 +280,14 @@ gh() {
     test "$VISIBILITY" != unavailable || return 3
     printf '%s\\n' "$VISIBILITY"
 }
-python3() { printf '%s\\n' "$PREFETCH_HELP"; }
+python3() {
+    test -z "${GH_TOKEN+x}" || return 4
+    printf '%s\\n' "$PREFETCH_HELP"
+}
 '''
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "outputs"
+            arguments = Path(directory) / "arguments"
             for visibility, option, allowed in (
                     ("private", "--allow-organization", True),
                     ("private", "--allowed-repositories", False),
@@ -288,12 +297,23 @@ python3() { printf '%s\\n' "$PREFETCH_HELP"; }
                 with self.subTest(visibility=visibility, option=option):
                     output.write_text("")
                     env = {"GITHUB_REPOSITORY": "fin-assist/assistant", "VISIBILITY": visibility,
-                           "PREFETCH_HELP": option, "GITHUB_OUTPUT": str(output)}
+                           "PREFETCH_HELP": option, "GITHUB_OUTPUT": str(output), "GH_TOKEN": "repository-reader"}
                     result = execute(fixtures + gate["run"], **env)
                     self.assertEqual(result.returncode == 0, visibility != "unavailable", result.stderr)
-                    self.assertEqual(output.read_text(), "enabled=true\n" if allowed else "")
+                    selected = output.read_text()
+                    self.assertEqual(selected, "enabled=true\n" if allowed else "")
                     result = execute(fixtures + recheck["run"], **env)
                     self.assertEqual(result.returncode == 0, visibility == "private", result.stderr)
+                    if visibility != "unavailable":
+                        legacy = "checked-repo" if visibility != "private" else ""
+                        recorder = '''python3() { printf '%s\\n' "$@" > "$ARGUMENT_LOG"; }\n'''
+                        prepared = execute(recorder + prefetch["run"], RUNNER_TEMP=directory,
+                                           ORGANIZATION_READER=str(bool(selected)).lower(),
+                                           ALLOWED_REPOSITORIES=legacy, PROFILE="service", QASE90_READY="false",
+                                           ARGUMENT_LOG=str(arguments))
+                        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+                        policy = arguments.read_text().splitlines()[7:]
+                        self.assertEqual(policy, ["--allow-organization"] if allowed else ["--allowed-repositories", legacy])
 
     def test_trusted_preparation_checks_out_only_the_pinned_go_ci_repository(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())

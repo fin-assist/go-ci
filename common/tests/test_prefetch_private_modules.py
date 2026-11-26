@@ -308,10 +308,12 @@ class PrivateModulePrefetchTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_unreviewed_module_is_rejected_before_cross_repo_fetch(self):
-        with patch.object(prefetch, "download_module") as download, self.assertRaisesRegex(ValueError, "outside the reviewed"):
-            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories={"other"})
-        download.assert_not_called()
-        self.assertFalse(self.output.exists())
+        for allowed in (set(), {"other"}):
+            with self.subTest(allowed=allowed), patch.object(prefetch, "download_module") as download:
+                with self.assertRaisesRegex(ValueError, "outside the reviewed"):
+                    prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories=allowed)
+                download.assert_not_called()
+                self.assertFalse(self.output.exists())
 
     def test_git_error_does_not_reveal_credentials(self):
         failure = subprocess.CalledProcessError(1, ["go"], stderr=b"test-token")

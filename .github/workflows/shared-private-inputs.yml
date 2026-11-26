@@ -263,6 +263,7 @@ jobs:
         run: |
           set -euo pipefail
           visibility=$(timeout 35s gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)
+          unset GH_TOKEN
           if [ "$visibility" != private ]; then
             exit 0
           fi

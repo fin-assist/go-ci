@@ -261,6 +261,40 @@ class PrivateInputRestoreTests(unittest.TestCase):
                     result = execute(gate["run"], **env, TARGET_REF=ref, PROTECTED=protected)
                     self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
+    def test_organization_prefetch_requires_live_private_visibility_and_new_prepare(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
+        steps = workflow["jobs"]["prepare"]["steps"]
+        gate = next(step for step in steps if step.get("id") == "organization-reader")
+        recheck = next(step for step in steps if step.get("name") == "Verify the destination still has private visibility")
+        upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertLess(steps.index(recheck), steps.index(upload))
+        fixtures = '''
+timeout() { shift; "$@"; }
+gh() {
+    test "$1" = api && test "$2" = repos/fin-assist/assistant || return 2
+    test "$VISIBILITY" != unavailable || return 3
+    printf '%s\\n' "$VISIBILITY"
+}
+python3() { printf '%s\\n' "$PREFETCH_HELP"; }
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            for visibility, option, allowed in (
+                    ("private", "--allow-organization", True),
+                    ("private", "--allowed-repositories", False),
+                    ("public", "--allow-organization", False),
+                    ("internal", "--allow-organization", False),
+                    ("unavailable", "--allow-organization", False)):
+                with self.subTest(visibility=visibility, option=option):
+                    output.write_text("")
+                    env = {"GITHUB_REPOSITORY": "fin-assist/assistant", "VISIBILITY": visibility,
+                           "PREFETCH_HELP": option, "GITHUB_OUTPUT": str(output)}
+                    result = execute(fixtures + gate["run"], **env)
+                    self.assertEqual(result.returncode == 0, visibility != "unavailable", result.stderr)
+                    self.assertEqual(output.read_text(), "enabled=true\n" if allowed else "")
+                    result = execute(fixtures + recheck["run"], **env)
+                    self.assertEqual(result.returncode == 0, visibility == "private", result.stderr)
+
     def test_trusted_preparation_checks_out_only_the_pinned_go_ci_repository(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
         job = workflow["jobs"]["prepare"]

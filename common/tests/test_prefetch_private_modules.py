@@ -121,6 +121,25 @@ class PrivateModulePrefetchTest(unittest.TestCase):
             "Version": VERSION, "Time": "2026-01-02T03:04:05Z",
         })
 
+    def test_organization_policy_follows_locks_without_a_repository_list(self):
+        new_module = "github.com/fin-assist/new-library"
+        foreign_module = "github.com/another-owner/foreign-library"
+        self.go_mod.write_text(self.go_mod.read_text().replace(MODULE, new_module))
+        self.go_sum.write_text(LOCKS.replace(MODULE, new_module) + LOCKS.replace(MODULE, foreign_module))
+        real_run = subprocess.run
+
+        def run(command, **options):
+            if command == ["go", "telemetry", "off"] or command[:4] == ["go", "mod", "edit", "-json"]:
+                return real_run(command, **options)
+            return self.fake_download(command, **options)
+
+        with patch.object(subprocess, "run", run):
+            prefetch.prefetch(self.go_mod, self.go_sum, self.output, "test-token", allowed_repositories=None)
+
+        self.assertEqual(self.downloads, [(new_module, VERSION)])
+        self.assertTrue((self.output / new_module / "@v" / f"{VERSION}.zip").is_file())
+        self.assertFalse((self.output / foreign_module).exists())
+
     def test_combines_historical_locks_and_accepts_missing_sum_without_private_requires(self):
         old_mod = self.root / "tag.mod"
         old_sum = self.root / "tag.sum"
@@ -202,7 +221,7 @@ class PrivateModulePrefetchTest(unittest.TestCase):
                             lock += f'{required} {VERSION} {ZIP_SUM}\n'
                         archive.writestr(f'{module}@{version}/go.sum', lock)
 
-        for allowed in ({'contracts', 'go-grpc'}, {'contracts', 'go-grpc', 'go-migrate'}):
+        for allowed in ({'contracts', 'go-grpc'}, {'contracts', 'go-grpc', 'go-migrate'}, None):
             with self.subTest(allowed=allowed), tempfile.TemporaryDirectory(dir=self.root) as work_dir:
                 downloads.clear()
                 work = Path(work_dir)
@@ -210,13 +229,13 @@ class PrivateModulePrefetchTest(unittest.TestCase):
                 env = prefetch.go_environment(work)
                 locks = {(MODULE, VERSION): {'mod': MOD_SUM, 'zip': ZIP_SUM}}
                 with patch.object(prefetch, 'download_module', side_effect=verified_download):
-                    if 'go-migrate' not in allowed:
+                    if allowed is not None and 'go-migrate' not in allowed:
                         with self.assertRaisesRegex(ValueError, r'from .*go-grpc@.*reviewed access boundary: go-migrate'):
                             prefetch.download_locked_graph(locks, work, env, env, proxy, allowed, transitive=True)
                     else:
                         prefetch.download_locked_graph(locks, work, env, env, proxy, allowed, transitive=True)
                 expected = [(MODULE, {'mod', 'zip'}), (middle, {'mod', 'zip'})]
-                if 'go-migrate' in allowed:
+                if allowed is None or 'go-migrate' in allowed:
                     expected.append((leaf, {'mod'}))
                 self.assertEqual(downloads, expected)
 

@@ -78,6 +78,31 @@ class ConsumerContractTests(unittest.TestCase):
         stream = io.StringIO()
         return unittest.TextTestRunner(stream=stream).run(CONTRACT.suite(self.root, COMMON))
 
+    def test_branch_backed_library_can_omit_the_legacy_repository_list(self):
+        doc = self.fixture('library', 'github.com/fin-assist/go-worker')
+        path = self.root / '.github/workflows/private-ci-inputs.yml'
+        prep = yaml.safe_load(path.read_text())
+        del prep['jobs']['prepare']['with']['allowed_module_repositories']
+        path.write_text(yaml.safe_dump(prep))
+        self.assertFalse(self.result(doc).wasSuccessful())
+
+        (self.root / '.finassist-ci.json').write_text(json.dumps({'profile': 'library'}))
+        prep['on'] = {'workflow_run': {'workflows': ['CI'], 'types': ['in_progress']}}
+        prep['permissions']['actions'] = 'read'
+        prepare = prep['jobs']['prepare']
+        prepare.update({'if': CONTRACT.BRANCH_PREPARE_CONDITION,
+                        'uses': CONTRACT.SOURCE + 'shared-private-inputs.yml@main',
+                        'with': {'profile': 'library'}})
+        path.write_text(yaml.safe_dump(prep))
+        doc['jobs']['private-inputs'] = {'if': CONTRACT.DISCOVERY_CONDITION,
+                                         'uses': CONTRACT.SOURCE + 'shared-private-discovery.yml@main'}
+        for name, job in doc['jobs'].items():
+            if name.endswith('-check'):
+                job['uses'] = job['uses'].replace('@' + PIN, '@main')
+                del job['with']['revision']
+        result = self.result(doc)
+        self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+
     def relay_fixture(self, module='github.com/fin-assist/go-service-template'):
         (self.root / '.github/workflows/qase90.yml').unlink(missing_ok=True)
         self.fixture(module=module)

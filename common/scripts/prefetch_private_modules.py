@@ -204,6 +204,8 @@ def archived_requirements(module, version, work, env, proxy):
 
 
 def require_allowed(locks, allowed_repositories):
+    if allowed_repositories is None:
+        return
     blocked = {module.split("/")[2] for module, _ in locks} - allowed_repositories
     if blocked:
         raise ValueError("private module repositories outside the reviewed access boundary: " + ", ".join(sorted(blocked)))
@@ -278,7 +280,7 @@ def snapshot_metadata(module, work, env, proxy):
 
 
 def prefetch(go_mod, go_sum, output, token, *, allowed_repositories, baselines=(), include_metadata=False):
-    if any(REPOSITORY.fullmatch(repo) is None for repo in allowed_repositories):
+    if allowed_repositories is not None and any(REPOSITORY.fullmatch(repo) is None for repo in allowed_repositories):
         raise ValueError("invalid repository in the private module allowlist")
     if len(baselines) > BASELINE_LIMIT:
         raise ValueError("too many baseline releases")
@@ -321,13 +323,17 @@ def main():
     parser.add_argument("--go-mod", required=True, type=Path)
     parser.add_argument("--go-sum", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--allowed-repositories", required=True)
+    repository_policy = parser.add_mutually_exclusive_group(required=True)
+    repository_policy.add_argument("--allowed-repositories")
+    repository_policy.add_argument("--allow-organization", action="store_true",
+                                   help=f"allow checksum-locked modules from {PRIVATE_ROOT}")
     parser.add_argument("--baseline", nargs=2, action="append", default=[], type=Path, metavar=("GO_MOD", "GO_SUM"))
     parser.add_argument("--include-metadata", action="store_true")
     args = parser.parse_args()
     try:
+        allowed_repositories = None if args.allow_organization else set(args.allowed_repositories.split())
         prefetch(args.go_mod, args.go_sum, args.output.absolute(), os.environ.get("GO_MODULES_TOKEN"),
-                 allowed_repositories=set(args.allowed_repositories.split()), baselines=args.baseline,
+                 allowed_repositories=allowed_repositories, baselines=args.baseline,
                  include_metadata=args.include_metadata)
     except (OSError, ValueError) as error:
         parser.exit(1, f"private module prefetch failed: {error}\n")

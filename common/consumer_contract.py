@@ -282,28 +282,33 @@ def suite(root, common):
             if branch_prep:
                 expected_permissions['actions'] = 'read'
             self.assertEqual(prep['permissions'], expected_permissions)
-            allowed = prepare['with']['allowed_module_repositories']
-            self.assertIsInstance(allowed, str)
-            self.assertTrue(all(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', repo) for repo in allowed.split()))
-            prepare_inputs = {'allowed_module_repositories': allowed}
+            inputs = prepare.get('with', {})
+            prepare_inputs = {}
+            if pin or 'allowed_module_repositories' in inputs:
+                allowed = inputs['allowed_module_repositories']
+                self.assertIsInstance(allowed, str)
+                self.assertTrue(all(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', repo) for repo in allowed.split()))
+                prepare_inputs['allowed_module_repositories'] = allowed
             if not branch_prep:
                 prepare_inputs.update(revision_input)
             if manifest['profile'] == 'library':
                 prepare_inputs['profile'] = 'library'
             qase90_inputs = ('qase90_bsd_revision', 'qase90_analytics_revision')
-            if any(name in prepare['with'] for name in qase90_inputs):
+            if any(name in inputs for name in qase90_inputs):
                 self.assertEqual(modules[0], 'github.com/fin-assist/bank-bff')
                 for name in qase90_inputs:
-                    revision = prepare['with'].get(name, '')
+                    revision = inputs.get(name, '')
                     self.assertRegex(revision, r'^[0-9a-f]{40}$')
                     prepare_inputs[name] = revision
-            self.assertEqual(prep['jobs'], {'prepare': {
+            expected_prepare = {
                 'if': (SAME_REPO if not branch_prep else
                            BRIDGE_PREPARE_CONDITION if pin else BRANCH_PREPARE_CONDITION),
                 'uses': SOURCE + 'shared-private-inputs.yml@' + prep_ref,
-                'with': prepare_inputs,
                 'secrets': {'GO_MODULES_TOKEN': '${{ secrets.GO_MODULES_TOKEN }}'},
-            }})
+            }
+            if prepare_inputs:
+                expected_prepare['with'] = prepare_inputs
+            self.assertEqual(prep['jobs'], {'prepare': expected_prepare})
             events = prep.get('on', prep.get(True))
             expected_events = dict(PREPARE_EVENTS) if pin else {}
             if branch_prep:

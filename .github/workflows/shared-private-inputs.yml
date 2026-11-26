@@ -4,9 +4,8 @@ on:
   workflow_call:
     inputs:
       allowed_module_repositories:
-        description: Space-separated private repositories with verified reader access
+        description: Legacy module list for public callers or older pinned revisions
         type: string
-        required: true
       profile:
         description: Trusted consumer module profile
         type: string
@@ -256,17 +255,50 @@ jobs:
           python3 .finassist-ci/trusted-preparation/common/scripts/private_ci_manifest.py write \
             --directory "$RUNNER_TEMP/private-ci-input" --revision "$SOURCE_SHA" \
             --manifest "$RUNNER_TEMP/private-ci-output/manifest.json"
+      - name: Resolve the private module repository policy
+        id: organization-reader
+        if: steps.manifests.outputs.revision != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          visibility=$(timeout 35s gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)
+          unset GH_TOKEN
+          if [ "$visibility" != private ]; then
+            exit 0
+          fi
+          help=$(python3 .finassist-ci/trusted-preparation/common/scripts/prefetch_private_modules.py --help)
+          if [[ "$help" == *--allow-organization* ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify artifact readers for the organization module policy
+        id: organization-audience
+        if: steps.organization-reader.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          verifier=.finassist-ci/trusted-preparation/common/scripts/verify_private_artifact_audience.py
+          if timeout 120s python3 "$verifier" "$GITHUB_REPOSITORY"; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::warning::Using the legacy module policy because organization artifact access could not be verified.'
+          fi
       - name: Prefetch checksum-locked private modules
         if: steps.manifests.outputs.revision != ''
         env:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
           ALLOWED_REPOSITORIES: ${{ inputs.allowed_module_repositories }}
+          ORGANIZATION_READER: ${{ steps.organization-audience.outputs.enabled == 'true' }}
           PROFILE: ${{ inputs.profile }}
           QASE90_READY: ${{ steps.qase90.outcome == 'success' }}
         run: |
           input="$RUNNER_TEMP/private-ci-input"
           output="$RUNNER_TEMP/private-ci-output"
-          options=()
+          if [ "$ORGANIZATION_READER" = true ]; then
+            options=(--allow-organization)
+          else
+            options=(--allowed-repositories "$ALLOWED_REPOSITORIES")
+          fi
           if [ "$PROFILE" = library ]; then
             options+=(--include-metadata)
             while read -r tag _sha; do
@@ -279,7 +311,14 @@ jobs:
           fi
           python3 .finassist-ci/trusted-preparation/common/scripts/prefetch_private_modules.py \
             --go-mod "$input/go.mod" --go-sum "$input/go.sum" --output "$output/proxy" \
-            --allowed-repositories "$ALLOWED_REPOSITORIES" "${options[@]}"
+            "${options[@]}"
+      - name: Recheck the verified artifact audience before publishing
+        if: steps.organization-audience.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          timeout 120s python3 .finassist-ci/trusted-preparation/common/scripts/verify_private_artifact_audience.py \
+            "$GITHUB_REPOSITORY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: steps.manifests.outputs.revision != ''
         with:

@@ -265,10 +265,12 @@ class PrivateInputRestoreTests(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
         steps = workflow["jobs"]["prepare"]["steps"]
         gate = next(step for step in steps if step.get("id") == "organization-reader")
+        audience = next(step for step in steps if step.get("id") == "organization-audience")
         prefetch = next(step for step in steps if step.get("name") == "Prefetch checksum-locked private modules")
-        recheck = next(step for step in steps if step.get("name") == "Verify the destination still has private visibility")
+        recheck = next(step for step in steps if step.get("name") == "Recheck the verified artifact audience before publishing")
         upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
-        condition = "steps.organization-reader.outputs.enabled == 'true'"
+        self.assertEqual(audience["if"], "steps.organization-reader.outputs.enabled == 'true'")
+        condition = "steps.organization-audience.outputs.enabled == 'true'"
         self.assertEqual(prefetch["env"]["ORGANIZATION_READER"], "${{ " + condition + " }}")
         self.assertEqual(recheck["if"], condition)
         self.assertFalse(recheck.get("continue-on-error", False))
@@ -281,6 +283,10 @@ gh() {
     printf '%s\\n' "$VISIBILITY"
 }
 python3() {
+    if [[ "$1" == *verify_private_artifact_audience.py ]]; then
+        test "$2" = fin-assist/assistant || return 5
+        return "$AUDIT_EXIT"
+    fi
     test -z "${GH_TOKEN+x}" || return 4
     printf '%s\\n' "$PREFETCH_HELP"
 }
@@ -288,22 +294,29 @@ python3() {
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "outputs"
             arguments = Path(directory) / "arguments"
-            for visibility, option, allowed in (
-                    ("private", "--allow-organization", True),
-                    ("private", "--allowed-repositories", False),
-                    ("public", "--allow-organization", False),
-                    ("internal", "--allow-organization", False),
-                    ("unavailable", "--allow-organization", False)):
-                with self.subTest(visibility=visibility, option=option):
+            for visibility, option, audit_exit in (
+                    ("private", "--allow-organization", 0),
+                    ("private", "--allow-organization", 1),
+                    ("private", "--allowed-repositories", 0),
+                    ("public", "--allow-organization", 0),
+                    ("internal", "--allow-organization", 0),
+                    ("unavailable", "--allow-organization", 0)):
+                with self.subTest(visibility=visibility, option=option, audit_exit=audit_exit):
                     output.write_text("")
                     env = {"GITHUB_REPOSITORY": "fin-assist/assistant", "VISIBILITY": visibility,
-                           "PREFETCH_HELP": option, "GITHUB_OUTPUT": str(output), "GH_TOKEN": "repository-reader"}
+                           "PREFETCH_HELP": option, "GITHUB_OUTPUT": str(output), "GH_TOKEN": "repository-reader",
+                           "AUDIT_EXIT": str(audit_exit)}
                     result = execute(fixtures + gate["run"], **env)
                     self.assertEqual(result.returncode == 0, visibility != "unavailable", result.stderr)
+                    eligible = visibility == "private" and option == "--allow-organization"
+                    self.assertEqual(output.read_text(), "enabled=true\n" if eligible else "")
+                    output.write_text("")
+                    if eligible:
+                        result = execute(fixtures + audience["run"], **env)
+                        self.assertEqual(result.returncode, 0, result.stderr)
                     selected = output.read_text()
+                    allowed = eligible and audit_exit == 0
                     self.assertEqual(selected, "enabled=true\n" if allowed else "")
-                    result = execute(fixtures + recheck["run"], **env)
-                    self.assertEqual(result.returncode == 0, visibility == "private", result.stderr)
                     if visibility != "unavailable":
                         legacy = "checked-repo" if visibility != "private" else ""
                         recorder = '''python3() { printf '%s\\n' "$@" > "$ARGUMENT_LOG"; }\n'''
@@ -314,6 +327,8 @@ python3() {
                         self.assertEqual(prepared.returncode, 0, prepared.stderr)
                         policy = arguments.read_text().splitlines()[7:]
                         self.assertEqual(policy, ["--allow-organization"] if allowed else ["--allowed-repositories", legacy])
+        result = execute(fixtures + recheck["run"], GITHUB_REPOSITORY="fin-assist/assistant", AUDIT_EXIT="1")
+        self.assertNotEqual(result.returncode, 0)
 
     def test_trusted_preparation_checks_out_only_the_pinned_go_ci_repository(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-private-inputs.yml").read_text())
